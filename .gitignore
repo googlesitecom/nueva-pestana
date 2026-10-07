@@ -60,3 +60,6 @@ server.log
 /download/
 worklog.md
 agent-ctx/
+
+# plantilla de variables de entorno (copiar a .env)
+!.env.example
