@@ -63,3 +63,4 @@ agent-ctx/
 
 # plantilla de variables de entorno (copiar a .env)
 !.env.example
+tool-results/
