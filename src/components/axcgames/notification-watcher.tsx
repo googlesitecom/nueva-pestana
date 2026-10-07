@@ -9,15 +9,14 @@
  *  - Mensajes nuevos: toast + sonido + notificación de escritorio (si el
  *    documento no tiene el foco, p. ej. jugando en el iframe o pestaña en
  *    segundo plano).
- *  - Solicitudes de amistad y amigos nuevos.
+ *  - Solicitudes de amistad, amigos nuevos e invitaciones a grupos.
+ *  - Llamadas entrantes con la pestaña en segundo plano.
  *  - Contador de no leídos en el título de la pestaña: "(3) nueva-pestaña".
- *  - Desbloqueo de audio en el primer gesto y petición de permiso al
- *    iniciar sesión.
  */
 
 import { useEffect, useRef } from "react";
-import { getSocket } from "@/lib/socket";
-import { useAxStore, type AxMessage } from "@/lib/store";
+import { subscribeP2P, type P2pEvent } from "@/lib/p2p";
+import { useAxStore } from "@/lib/store";
 import { useToast } from "@/hooks/use-toast";
 import {
   notifyDesktop,
@@ -33,7 +32,6 @@ export const APP_TITLE = "nueva-pestaña";
 export default function NotificationWatcher() {
   const { toast } = useToast();
   const me = useAxStore((s) => s.me);
-  const socketConnected = useAxStore((s) => s.socketConnected);
   const conversations = useAxStore((s) => s.conversations);
   const incoming = useAxStore((s) => s.incoming);
   const friends = useAxStore((s) => s.friends);
@@ -73,57 +71,65 @@ export default function NotificationWatcher() {
     }
   }, [me]);
 
-  // 3) Escucha global de mensajes nuevos por socket (activa en todas las vistas)
+  // 3) Escucha global de eventos P2P (activa en todas las vistas)
   useEffect(() => {
     if (!me) return;
 
-    const onMessage = (payload: { message?: AxMessage }) => {
-      const msg = payload?.message;
-      if (!msg) return;
-      const state = useAxStore.getState();
-      if (msg.senderId === state.me?.id) return;
-      const isViewing =
-        state.view === "chat" && state.activeConversationId === msg.conversationId;
-      if (isViewing) return; // ya lo está leyendo en el chat
+    const onP2pEvent = (e: P2pEvent) => {
+      if (e.type === "message") {
+        const state = useAxStore.getState();
+        if (e.message.senderId === state.me?.id) return;
+        const isViewing =
+          state.view === "chat" && state.activeConversationId === e.message.conversationId;
+        if (isViewing) return; // ya lo está leyendo en el chat
 
-      const preview =
-        msg.content.length > 90 ? `${msg.content.slice(0, 90)}…` : msg.content;
-      playMessageChime();
-      toast({
-        title: msg.sender.displayName,
-        description: preview,
-      });
-      if (!document.hasFocus()) {
-        // Jugando en el iframe, en otra ventana o con la pestaña en segundo plano
-        notifyDesktop(
-          `${msg.sender.displayName} · axcgames`,
-          preview,
-          `conv:${msg.conversationId}`
-        );
+        const content = e.message.content;
+        const preview = content.length > 90 ? `${content.slice(0, 90)}…` : content;
+        playMessageChime();
+        toast({
+          title: e.message.sender.displayName,
+          description: preview,
+        });
+        if (!document.hasFocus()) {
+          // Jugando en el iframe, en otra ventana o con la pestaña en segundo plano
+          notifyDesktop(
+            `${e.message.sender.displayName} · axcgames`,
+            preview,
+            `conv:${e.message.conversationId}`,
+          );
+        }
+        return;
+      }
+
+      if (e.type === "call-incoming") {
+        if (!document.hasFocus()) {
+          notifyDesktop(
+            `${e.from.displayName} te llama`,
+            e.callType === "video" ? "Videollamada entrante" : "Llamada entrante",
+            `call:${e.conversationId}`,
+          );
+        }
+        return;
+      }
+
+      if (e.type === "group-invite") {
+        playFriendChime();
+        toast({
+          title: "Te añadieron a un grupo",
+          description: `${e.fromName} te invitó a «${e.group.name ?? "Grupo"}»`,
+        });
+        if (!document.hasFocus()) {
+          notifyDesktop(
+            "axcgames",
+            `${e.fromName} te invitó al grupo ${e.group.name ?? ""}`,
+            "friends",
+          );
+        }
       }
     };
 
-    let cleanup: (() => void) | null = null;
-    const attach = () => {
-      const socket = getSocket();
-      if (!socket) return;
-      socket.off("message:new", onMessage);
-      socket.on("message:new", onMessage);
-      cleanup = () => socket.off("message:new", onMessage);
-    };
-    attach();
-    if (!getSocket()) {
-      // El socket aún no existe (p. ej. recarga con sesión): reintento al conectar
-      const t = window.setTimeout(attach, 1200);
-      const t2 = window.setTimeout(attach, 3000);
-      return () => {
-        window.clearTimeout(t);
-        window.clearTimeout(t2);
-        cleanup?.();
-      };
-    }
-    return () => cleanup?.();
-  }, [me, socketConnected, toast]);
+    return subscribeP2P(onP2pEvent);
+  }, [me, toast]);
 
   // 4) Solicitudes de amistad nuevas → toast + sonido + escritorio
   useEffect(() => {

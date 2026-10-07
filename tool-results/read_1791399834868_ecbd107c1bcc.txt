@@ -1,0 +1,757 @@
+     1→"use client";
+     2→
+     3→import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+     4→import { AnimatePresence, motion } from "framer-motion";
+     5→import {
+     6→  Mic,
+     7→  MicOff,
+     8→  Phone,
+     9→  PhoneOff,
+    10→  Video,
+    11→  VideoOff,
+    12→  Volume2,
+    13→} from "lucide-react";
+    14→import { useAxStore, type AxUser } from "@/lib/store";
+    15→import { getSocket } from "@/lib/socket";
+    16→import Avatar from "../avatar";
+    17→import { useToast } from "@/hooks/use-toast";
+    18→
+    19→const ICE_CONFIG: RTCConfiguration = {
+    20→  iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+    21→};
+    22→
+    23→/** Timbre de llamada con WebAudio (best effort) */
+    24→function useRinger() {
+    25→  const ctxRef = useRef<AudioContext | null>(null);
+    26→  const timerRef = useRef<number | null>(null);
+    27→
+    28→  const beep = useCallback((delay: number, freq: number) => {
+    29→    try {
+    30→      if (!ctxRef.current) {
+    31→        const AC =
+    32→          window.AudioContext ??
+    33→          (window as unknown as { webkitAudioContext: typeof AudioContext })
+    34→            .webkitAudioContext;
+    35→        ctxRef.current = new AC();
+    36→      }
+    37→      const ctx = ctxRef.current;
+    38→      if (!ctx) return;
+    39→      if (ctx.state === "suspended") void ctx.resume();
+    40→      const t = ctx.currentTime + delay;
+    41→      const osc = ctx.createOscillator();
+    42→      const gain = ctx.createGain();
+    43→      osc.type = "sine";
+    44→      osc.frequency.value = freq;
+    45→      gain.gain.setValueAtTime(0.0001, t);
+    46→      gain.gain.exponentialRampToValueAtTime(0.09, t + 0.03);
+    47→      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    48→      osc.connect(gain);
+    49→      gain.connect(ctx.destination);
+    50→      osc.start(t);
+    51→      osc.stop(t + 0.26);
+    52→    } catch {
+    53→      /* sin audio disponible */
+    54→    }
+    55→  }, []);
+    56→
+    57→  const stop = useCallback(() => {
+    58→    if (timerRef.current !== null) {
+    59→      window.clearInterval(timerRef.current);
+    60→      timerRef.current = null;
+    61→    }
+    62→  }, []);
+    63→
+    64→  const start = useCallback(() => {
+    65→    stop();
+    66→    const pattern = () => {
+    67→      beep(0, 754);
+    68→      beep(0.28, 754);
+    69→    };
+    70→    pattern();
+    71→    timerRef.current = window.setInterval(pattern, 2200);
+    72→  }, [beep, stop]);
+    73→
+    74→  useEffect(() => stop, [stop]);
+    75→
+    76→  return { start, stop };
+    77→}
+    78→
+    79→function formatDuration(sec: number): string {
+    80→  const m = Math.floor(sec / 60);
+    81→  const s = sec % 60;
+    82→  return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+    83→}
+    84→
+    85→function VideoTile({
+    86→  stream,
+    87→  muted,
+    88→  mirrored,
+    89→  label,
+    90→  color,
+    91→  audioOff,
+    92→  videoOff,
+    93→  connecting,
+    94→}: {
+    95→  stream: MediaStream | null;
+    96→  muted: boolean;
+    97→  mirrored: boolean;
+    98→  label: string;
+    99→  color: string;
+   100→  audioOff?: boolean;
+   101→  videoOff?: boolean;
+   102→  connecting?: boolean;
+   103→}) {
+   104→  const ref = useRef<HTMLVideoElement>(null);
+   105→
+   106→  useEffect(() => {
+   107→    if (ref.current && stream && ref.current.srcObject !== stream) {
+   108→      ref.current.srcObject = stream;
+   109→    }
+   110→  }, [stream]);
+   111→
+   112→  const hasVideo = stream ? stream.getVideoTracks().some((t) => t.enabled && t.readyState === "live") : false;
+   113→
+   114→  return (
+   115→    <motion.div
+   116→      layout
+   117→      initial={{ opacity: 0, scale: 0.95 }}
+   118→      animate={{ opacity: 1, scale: 1 }}
+   119→      exit={{ opacity: 0, scale: 0.95 }}
+   120→      className="group relative aspect-video min-w-0 overflow-hidden rounded-2xl border border-white/10 bg-zinc-950"
+   121→    >
+   122→      <video
+   123→        ref={ref}
+   124→        autoPlay
+   125→        playsInline
+   126→        muted={muted}
+   127→        className={`h-full w-full object-cover ${mirrored ? "scale-x-[-1]" : ""} ${
+   128→          hasVideo ? "" : "hidden"
+   129→        }`}
+   130→      />
+   131→      {(!hasVideo || connecting) && (
+   132→        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
+   133→          {connecting ? (
+   134→            <Avatar displayName={label} color={color} size={64} />
+   135→          ) : (
+   136→            <Avatar displayName={label} color={color} size={64} />
+   137→          )}
+   138→          <p className="text-xs font-semibold text-white/60">
+   139→            {connecting ? "Conectando…" : videoOff ? "Cámara desactivada" : "Sin vídeo"}
+   140→          </p>
+   141→        </div>
+   142→      )}
+   143→      {/* Etiqueta */}
+   144→      <div className="absolute inset-x-0 bottom-0 flex items-center gap-2 bg-gradient-to-t from-black/80 to-transparent px-3 pb-2 pt-8">
+   145→        <span className="truncate text-xs font-bold text-white drop-shadow">{label}</span>
+   146→        {audioOff && <MicOff className="h-3.5 w-3.5 shrink-0 text-red-400" />}
+   147→      </div>
+   148→    </motion.div>
+   149→  );
+   150→}
+   151→
+   152→export default function CallLayer() {
+   153→  const {
+   154→    me,
+   155→    call,
+   156→    incomingCall,
+   157→    conversations,
+   158→    callPeerStates,
+   159→    acceptIncomingCall,
+   160→    declineIncomingCall,
+   161→    cancelCall,
+   162→    leaveCall,
+   163→    endCallIfActive,
+   164→    setCallStatus,
+   165→    setPeerState,
+   166→  } = useAxStore();
+   167→  const { toast } = useToast();
+   168→  const ringer = useRinger();
+   169→
+   170→  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+   171→  const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({});
+   172→  const [remoteIds, setRemoteIds] = useState<string[]>([]);
+   173→  const [micOn, setMicOn] = useState(true);
+   174→  const [camOn, setCamOn] = useState(true);
+   175→  const [now, setNow] = useState(Date.now());
+   176→
+   177→  const pcsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+   178→  const pendingIceRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
+   179→  const localStreamRef = useRef<MediaStream | null>(null);
+   180→
+   181→  const conv = useMemo(
+   182→    () => conversations.find((c) => c.id === (call?.conversationId ?? incomingCall?.conversationId)),
+   183→    [conversations, call, incomingCall]
+   184→  );
+   185→
+   186→  const memberInfo = (id: string): AxUser | undefined =>
+   187→    conv?.members.find((m) => m.id === id);
+   188→
+   189→  // Reloj de duración
+   190→  useEffect(() => {
+   191→    if (!call) return;
+   192→    const t = window.setInterval(() => setNow(Date.now()), 1000);
+   193→    return () => window.clearInterval(t);
+   194→  }, [call]);
+   195→
+   196→  const cleanupMedia = useCallback(() => {
+   197→    for (const pc of pcsRef.current.values()) {
+   198→      try {
+   199→        pc.close();
+   200→      } catch {
+   201→        /* noop */
+   202→      }
+   203→    }
+   204→    pcsRef.current.clear();
+   205→    pendingIceRef.current.clear();
+   206→    localStreamRef.current?.getTracks().forEach((t) => t.stop());
+   207→    localStreamRef.current = null;
+   208→    setLocalStream(null);
+   209→    setRemoteStreams({});
+   210→    setRemoteIds([]);
+   211→    setMicOn(true);
+   212→    setCamOn(true);
+   213→  }, []);
+   214→
+   215→  // Adquirir medios al entrar en llamada
+   216→  useEffect(() => {
+   217→    if (!call) {
+   218→      cleanupMedia();
+   219→      return;
+   220→    }
+   221→    let cancelled = false;
+   222→    (async () => {
+   223→      try {
+   224→        const stream = await navigator.mediaDevices.getUserMedia({
+   225→          audio: true,
+   226→          video:
+   227→            call.type === "video"
+   228→              ? { width: { ideal: 1280 }, height: { ideal: 720 } }
+   229→              : false,
+   230→        });
+   231→        if (cancelled) {
+   232→          stream.getTracks().forEach((t) => t.stop());
+   233→          return;
+   234→        }
+   235→        localStreamRef.current = stream;
+   236→        setLocalStream(stream);
+   237→      } catch {
+   238→        // Sin micrófono/cámara: modo solo escucha con transceivers recvonly
+   239→        if (!cancelled) {
+   240→          localStreamRef.current = null;
+   241→          setLocalStream(null);
+   242→          toast({
+   243→            description:
+   244→              "Sin acceso a micrófono/cámara. Entrarás en modo solo escucha.",
+   245→          });
+   246→        }
+   247→      }
+   248→    })();
+   249→    return () => {
+   250→      cancelled = true;
+   251→    };
+   252→  }, [call?.conversationId]);
+   253→
+   254→  const createPeer = useCallback(
+   255→    async (remoteId: string, initiator: boolean, conversationId: string, video: boolean) => {
+   256→      const socket = getSocket();
+   257→      if (!socket || pcsRef.current.has(remoteId)) return;
+   258→
+   259→      const pc = new RTCPeerConnection(ICE_CONFIG);
+   260→      pcsRef.current.set(remoteId, pc);
+   261→      setRemoteIds((prev) => (prev.includes(remoteId) ? prev : [...prev, remoteId]));
+   262→
+   263→      pc.onicecandidate = (e) => {
+   264→        if (e.candidate) {
+   265→          socket.emit("call:ice", { conversationId, targetUserId: remoteId, candidate: e.candidate });
+   266→        }
+   267→      };
+   268→
+   269→      pc.ontrack = (e) => {
+   270→        if (e.streams[0]) {
+   271→          setRemoteStreams((prev) => ({ ...prev, [remoteId]: e.streams[0] }));
+   272→        }
+   273→      };
+   274→
+   275→      pc.onconnectionstatechange = () => {
+   276→        if (pc.connectionState === "connected") {
+   277→          setCallStatus("active");
+   278→        }
+   279→      };
+   280→
+   281→      const stream = localStreamRef.current;
+   282→      if (stream) {
+   283→        for (const track of stream.getTracks()) {
+   284→          pc.addTrack(track, stream);
+   285→        }
+   286→      } else {
+   287→        pc.addTransceiver("audio", { direction: "recvonly" });
+   288→        if (video) pc.addTransceiver("video", { direction: "recvonly" });
+   289→      }
+   290→
+   291→      if (initiator) {
+   292→        const offer = await pc.createOffer();
+   293→        await pc.setLocalDescription(offer);
+   294→        socket.emit("call:offer", {
+   295→          conversationId,
+   296→          targetUserId: remoteId,
+   297→          sdp: pc.localDescription,
+   298→        });
+   299→      }
+   300→    },
+   301→    [setCallStatus]
+   302→  );
+   303→
+   304→  const flushIce = useCallback(async (userId: string) => {
+   305→    const pc = pcsRef.current.get(userId);
+   306→    if (!pc || !pc.remoteDescription) return;
+   307→    const queue = pendingIceRef.current.get(userId) ?? [];
+   308→    pendingIceRef.current.set(userId, []);
+   309→    for (const candidate of queue) {
+   310→      try {
+   311→        await pc.addIceCandidate(candidate);
+   312→      } catch {
+   313→        /* candidato obsoleto */
+   314→      }
+   315→    }
+   316→  }, []);
+   317→
+   318→  // Listeners de señalización
+   319→  useEffect(() => {
+   320→    const socket = getSocket();
+   321→    if (!socket || !me) return;
+   322→
+   323→    const onIncoming = (data: { conversationId: string; type: "audio" | "video"; from: AxUser }) => {
+   324→      const state = useAxStore.getState();
+   325→      if (state.call) {
+   326→        // Ocupado: rechazar automáticamente
+   327→        socket.emit("call:decline", { conversationId: data.conversationId });
+   328→        return;
+   329→      }
+   330→      if (state.incomingCall?.conversationId === data.conversationId) return;
+   331→      useAxStore.setState({ incomingCall: data });
+   332→      ringer.start();
+   333→    };
+   334→
+   335→    const onPeerJoined = (data: { conversationId: string; userId: string }) => {
+   336→      const state = useAxStore.getState();
+   337→      if (state.call?.conversationId !== data.conversationId) return;
+   338→      void createPeer(data.userId, true, data.conversationId, state.call.type === "video");
+   339→    };
+   340→
+   341→    const onAccepted = (data: { conversationId: string; participantIds: string[] }) => {
+   342→      const state = useAxStore.getState();
+   343→      if (state.call?.conversationId !== data.conversationId) return;
+   344→      // Los participantes existentes nos ofrecerán conexión; solo registramos
+   345→      setRemoteIds((prev) => {
+   346→        const next = [...prev];
+   347→        for (const id of data.participantIds) {
+   348→          if (!next.includes(id)) next.push(id);
+   349→        }
+   350→        return next;
+   351→      });
+   352→    };
+   353→
+   354→    const onOffer = async (data: {
+   355→      conversationId: string;
+   356→      fromUserId: string;
+   357→      sdp: RTCSessionDescriptionInit;
+   358→    }) => {
+   359→      const state = useAxStore.getState();
+   360→      if (state.call?.conversationId !== data.conversationId) return;
+   361→      let pc = pcsRef.current.get(data.fromUserId);
+   362→      if (!pc) {
+   363→        await createPeer(
+   364→          data.fromUserId,
+   365→          false,
+   366→          data.conversationId,
+   367→          state.call.type === "video"
+   368→        );
+   369→        pc = pcsRef.current.get(data.fromUserId);
+   370→      }
+   371→      if (!pc) return;
+   372→      try {
+   373→        await pc.setRemoteDescription(data.sdp);
+   374→        await flushIce(data.fromUserId);
+   375→        const answer = await pc.createAnswer();
+   376→        await pc.setLocalDescription(answer);
+   377→        socket.emit("call:answer", {
+   378→          conversationId: data.conversationId,
+   379→          targetUserId: data.fromUserId,
+   380→          sdp: pc.localDescription,
+   381→        });
+   382→      } catch (e) {
+   383→        console.error("offer handling error", e);
+   384→      }
+   385→    };
+   386→
+   387→    const onAnswer = async (data: {
+   388→      conversationId: string;
+   389→      fromUserId: string;
+   390→      sdp: RTCSessionDescriptionInit;
+   391→    }) => {
+   392→      const pc = pcsRef.current.get(data.fromUserId);
+   393→      if (!pc) return;
+   394→      try {
+   395→        await pc.setRemoteDescription(data.sdp);
+   396→        await flushIce(data.fromUserId);
+   397→      } catch (e) {
+   398→        console.error("answer handling error", e);
+   399→      }
+   400→    };
+   401→
+   402→    const onIce = (data: { conversationId: string; fromUserId: string; candidate: RTCIceCandidateInit }) => {
+   403→      const state = useAxStore.getState();
+   404→      if (state.call?.conversationId !== data.conversationId) return;
+   405→      const pc = pcsRef.current.get(data.fromUserId);
+   406→      if (pc && pc.remoteDescription) {
+   407→        void pc.addIceCandidate(data.candidate).catch(() => undefined);
+   408→      } else {
+   409→        const q = pendingIceRef.current.get(data.fromUserId) ?? [];
+   410→        q.push(data.candidate);
+   411→        pendingIceRef.current.set(data.fromUserId, q);
+   412→      }
+   413→    };
+   414→
+   415→    const onPeerLeft = (data: { conversationId: string; userId: string }) => {
+   416→      const state = useAxStore.getState();
+   417→      if (state.call?.conversationId !== data.conversationId) return;
+   418→      const pc = pcsRef.current.get(data.userId);
+   419→      if (pc) {
+   420→        try {
+   421→          pc.close();
+   422→        } catch {
+   423→          /* noop */
+   424→        }
+   425→        pcsRef.current.delete(data.userId);
+   426→      }
+   427→      pendingIceRef.current.delete(data.userId);
+   428→      setRemoteStreams((prev) => {
+   429→        const next = { ...prev };
+   430→        delete next[data.userId];
+   431→        return next;
+   432→      });
+   433→      setRemoteIds((prev) => prev.filter((id) => id !== data.userId));
+   434→      const conv = state.conversations.find((c) => c.id === data.conversationId);
+   435→      const info = conv?.members.find((m) => m.id === data.userId);
+   436→      if (info) {
+   437→        toast({ description: `${info.displayName} salió de la llamada.` });
+   438→      }
+   439→      // En llamadas 1:1, si el otro cuelga, cerrar también la nuestra
+   440→      if (conv?.type === "dm") {
+   441→        useAxStore.setState({ call: null, callPeerStates: {} });
+   442→        // El servidor terminará la llamada y generará el mensaje del sistema
+   443→        const socket = getSocket();
+   444→        socket?.emit("call:leave", { conversationId: data.conversationId });
+   445→      }
+   446→    };
+   447→
+   448→    const onEnded = (data: { conversationId: string }) => {
+   449→      endCallIfActive(data.conversationId);
+   450→    };
+   451→
+   452→    const onDeclined = (data: { conversationId: string; userId: string; displayName: string }) => {
+   453→      const state = useAxStore.getState();
+   454→      if (state.call?.conversationId !== data.conversationId) return;
+   455→      toast({ description: `${data.displayName} rechazó la llamada.` });
+   456→    };
+   457→
+   458→    const onPeerState = (data: { conversationId: string; userId: string; audio?: boolean; video?: boolean }) => {
+   459→      const state = useAxStore.getState();
+   460→      if (state.call?.conversationId !== data.conversationId) return;
+   461→      setPeerState(data.userId, { audio: data.audio, video: data.video });
+   462→    };
+   463→
+   464→    const onBusy = (data: { conversationId: string }) => {
+   465→      const state = useAxStore.getState();
+   466→      if (state.call?.conversationId === data.conversationId) {
+   467→        toast({ description: "Ya hay una llamada en curso en este chat." });
+   468→        useAxStore.setState({ call: null });
+   469→      }
+   470→    };
+   471→
+   472→    socket.off("call:incoming", onIncoming);
+   473→    socket.on("call:incoming", onIncoming);
+   474→    socket.off("call:peer-joined", onPeerJoined);
+   475→    socket.on("call:peer-joined", onPeerJoined);
+   476→    socket.off("call:accepted", onAccepted);
+   477→    socket.on("call:accepted", onAccepted);
+   478→    socket.off("call:offer", onOffer);
+   479→    socket.on("call:offer", onOffer);
+   480→    socket.off("call:answer", onAnswer);
+   481→    socket.on("call:answer", onAnswer);
+   482→    socket.off("call:ice", onIce);
+   483→    socket.on("call:ice", onIce);
+   484→    socket.off("call:peer-left", onPeerLeft);
+   485→    socket.on("call:peer-left", onPeerLeft);
+   486→    socket.off("call:ended", onEnded);
+   487→    socket.on("call:ended", onEnded);
+   488→    socket.off("call:declined", onDeclined);
+   489→    socket.on("call:declined", onDeclined);
+   490→    socket.off("call:peer-state", onPeerState);
+   491→    socket.on("call:peer-state", onPeerState);
+   492→    socket.off("call:busy", onBusy);
+   493→    socket.on("call:busy", onBusy);
+   494→
+   495→    return () => {
+   496→      socket.off("call:incoming", onIncoming);
+   497→      socket.off("call:peer-joined", onPeerJoined);
+   498→      socket.off("call:accepted", onAccepted);
+   499→      socket.off("call:offer", onOffer);
+   500→      socket.off("call:answer", onAnswer);
+   501→      socket.off("call:ice", onIce);
+   502→      socket.off("call:peer-left", onPeerLeft);
+   503→      socket.off("call:ended", onEnded);
+   504→      socket.off("call:declined", onDeclined);
+   505→      socket.off("call:peer-state", onPeerState);
+   506→      socket.off("call:busy", onBusy);
+   507→    };
+   508→  }, [me?.id, createPeer, flushIce, endCallIfActive, setPeerState, toast, ringer]);
+   509→
+   510→  // Referencia de info de miembros accesible desde los handlers
+   511→  // (los handlers consultan el store directamente)
+   512→
+   513→  // Timbre mientras hay llamada entrante
+   514→  useEffect(() => {
+   515→    if (incomingCall) {
+   516→      ringer.start();
+   517→    } else {
+   518→      ringer.stop();
+   519→    }
+   520→  }, [incomingCall, ringer]);
+   521→
+   522→  const toggleMic = () => {
+   523→    const stream = localStreamRef.current;
+   524→    if (!stream) return;
+   525→    const next = !micOn;
+   526→    for (const t of stream.getAudioTracks()) t.enabled = next;
+   527→    setMicOn(next);
+   528→    const socket = getSocket();
+   529→    if (socket && call) {
+   530→      socket.emit("call:toggle", { conversationId: call.conversationId, audio: next });
+   531→    }
+   532→  };
+   533→
+   534→  const toggleCam = () => {
+   535→    const stream = localStreamRef.current;
+   536→    if (!stream) return;
+   537→    const next = !camOn;
+   538→    for (const t of stream.getVideoTracks()) t.enabled = next;
+   539→    setCamOn(next);
+   540→    const socket = getSocket();
+   541→    if (socket && call) {
+   542→      socket.emit("call:toggle", { conversationId: call.conversationId, video: next });
+   543→    }
+   544→  };
+   545→
+   546→  const hangup = () => {
+   547→    if (call?.status === "connecting" && call.role === "caller") {
+   548→      cancelCall();
+   549→    } else {
+   550→      leaveCall();
+   551→    }
+   552→  };
+   553→
+   554→  const durationSec = call ? Math.max(0, Math.floor((now - call.startedAt) / 1000)) : 0;
+   555→
+   556→  return (
+   557→    <>
+   558→      {/* Llamada entrante */}
+   559→      <AnimatePresence>
+   560→        {incomingCall && !call && (
+   561→          <motion.div
+   562→            initial={{ opacity: 0 }}
+   563→            animate={{ opacity: 1 }}
+   564→            exit={{ opacity: 0 }}
+   565→            className="fixed inset-0 z-[80] flex items-center justify-center bg-black/80 p-4 backdrop-blur-md"
+   566→          >
+   567→            <motion.div
+   568→              initial={{ scale: 0.9, y: 20 }}
+   569→              animate={{ scale: 1, y: 0 }}
+   570→              exit={{ scale: 0.95, opacity: 0 }}
+   571→              transition={{ type: "spring", stiffness: 300, damping: 26 }}
+   572→              className="w-full max-w-sm rounded-3xl border border-white/10 bg-zinc-950/95 p-8 text-center shadow-2xl shadow-black"
+   573→            >
+   574→              <div className="axc-ring-pulse mx-auto w-fit rounded-full">
+   575→                <Avatar
+   576→                  displayName={incomingCall.from.displayName}
+   577→                  color={incomingCall.from.avatarColor}
+   578→                  size={88}
+   579→                />
+   580→              </div>
+   581→              <h3 className="mt-5 font-display text-lg font-bold tracking-wide text-white">
+   582→                {incomingCall.from.displayName}
+   583→              </h3>
+   584→              <p className="mt-1 flex items-center justify-center gap-2 text-sm text-white/50">
+   585→                {incomingCall.type === "video" ? (
+   586→                  <Video className="h-4 w-4 text-amber-400" />
+   587→                ) : (
+   588→                  <Phone className="h-4 w-4 text-amber-400" />
+   589→                )}
+   590→                {incomingCall.type === "video" ? "Videollamada entrante" : "Llamada entrante"}…
+   591→              </p>
+   592→
+   593→              <div className="mt-8 flex items-center justify-center gap-6">
+   594→                <motion.button
+   595→                  type="button"
+   596→                  onClick={declineIncomingCall}
+   597→                  whileTap={{ scale: 0.9 }}
+   598→                  aria-label="Rechazar llamada"
+   599→                  className="flex h-16 w-16 items-center justify-center rounded-full bg-red-500 text-white shadow-xl shadow-red-500/30 transition hover:bg-red-400"
+   600→                >
+   601→                  <PhoneOff className="h-6 w-6" />
+   602→                </motion.button>
+   603→                <motion.button
+   604→                  type="button"
+   605→                  onClick={acceptIncomingCall}
+   606→                  whileTap={{ scale: 0.9 }}
+   607→                  aria-label="Aceptar llamada"
+   608→                  animate={{ rotate: [0, -8, 8, -8, 8, 0] }}
+   609→                  transition={{ delay: 1.2, duration: 0.5, repeat: Infinity, repeatDelay: 1.4 }}
+   610→                  className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500 text-white shadow-xl shadow-emerald-500/30 transition hover:bg-emerald-400"
+   611→                >
+   612→                  {incomingCall.type === "video" ? (
+   613→                    <Video className="h-6 w-6" />
+   614→                  ) : (
+   615→                    <Phone className="h-6 w-6" />
+   616→                  )}
+   617→                </motion.button>
+   618→              </div>
+   619→            </motion.div>
+   620→          </motion.div>
+   621→        )}
+   622→      </AnimatePresence>
+   623→
+   624→      {/* Llamada activa */}
+   625→      <AnimatePresence>
+   626→        {call && (
+   627→          <motion.div
+   628→            initial={{ opacity: 0 }}
+   629→            animate={{ opacity: 1 }}
+   630→            exit={{ opacity: 0 }}
+   631→            className="fixed inset-0 z-[75] flex flex-col bg-[#050505]/97 backdrop-blur-xl"
+   632→          >
+   633→            {/* Cabecera */}
+   634→            <div className="flex items-center justify-between px-5 py-4">
+   635→              <div className="flex items-center gap-3">
+   636→                <Volume2 className="h-5 w-5 text-amber-400" />
+   637→                <div>
+   638→                  <p className="font-display text-sm font-bold tracking-wide text-white">
+   639→                    {(conv
+   640→                      ? conv.type === "group"
+   641→                        ? conv.name ?? "Grupo"
+   642→                        : conv.members.find((m) => m.id !== me?.id)?.displayName
+   643→                      : "Llamada")?.toUpperCase()}
+   644→                  </p>
+   645→                  <p className="text-xs text-white/45">
+   646→                    {call.status === "connecting"
+   647→                      ? call.role === "caller"
+   648→                        ? "Llamando…"
+   649→                        : "Conectando…"
+   650→                      : formatDuration(durationSec)}
+   651→                  </p>
+   652→                </div>
+   653→              </div>
+   654→              <span
+   655→                className={`rounded-full border px-3 py-1 text-[10px] font-bold uppercase tracking-widest ${
+   656→                  call.status === "active"
+   657→                    ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-300"
+   658→                    : "border-amber-400/40 bg-amber-400/10 text-amber-300"
+   659→                }`}
+   660→              >
+   661→                {call.type === "video" ? "Vídeo" : "Voz"} ·{" "}
+   662→                {call.status === "active" ? "En curso" : "Conectando"}
+   663→              </span>
+   664→            </div>
+   665→
+   666→            {/* Rejilla de vídeos */}
+   667→            <div className="flex min-h-0 flex-1 items-center justify-center px-4 sm:px-8">
+   668→              <div
+   669→                className={`grid h-full w-full max-w-6xl gap-3 ${
+   670→                  remoteIds.length === 0
+   671→                    ? "grid-cols-1"
+   672→                    : remoteIds.length === 1
+   673→                      ? "grid-cols-1 sm:grid-cols-2"
+   674→                      : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3"
+   675→                } place-content-center`}
+   676→                style={{ gridAutoRows: "minmax(0, 1fr)", maxHeight: "100%" }}
+   677→              >
+   678→                <VideoTile
+   679→                  stream={localStream}
+   680→                  muted
+   681→                  mirrored
+   682→                  label="Tú"
+   683→                  color={me?.avatarColor ?? "#fbbf24"}
+   684→                  audioOff={!micOn}
+   685→                  videoOff={!camOn}
+   686→                />
+   687→                {remoteIds.map((rid) => {
+   688→                  const info = memberInfo(rid);
+   689→                  const peerState = callPeerStates[rid];
+   690→                  return (
+   691→                    <VideoTile
+   692→                      key={rid}
+   693→                      stream={remoteStreams[rid] ?? null}
+   694→                      muted={false}
+   695→                      mirrored={false}
+   696→                      label={info?.displayName ?? "Participante"}
+   697→                      color={info?.avatarColor ?? "#fbbf24"}
+   698→                      audioOff={peerState?.audio === false}
+   699→                      videoOff={peerState?.video === false}
+   700→                      connecting={!remoteStreams[rid]}
+   701→                    />
+   702→                  );
+   703→                })}
+   704→              </div>
+   705→            </div>
+   706→
+   707→            {/* Controles */}
+   708→            <div className="flex items-center justify-center gap-3 px-5 py-6">
+   709→              <motion.button
+   710→                type="button"
+   711→                whileTap={{ scale: 0.9 }}
+   712→                onClick={toggleMic}
+   713→                disabled={!localStream}
+   714→                aria-label={micOn ? "Silenciar micrófono" : "Activar micrófono"}
+   715→                className={`flex h-13 w-13 items-center justify-center rounded-full border p-3.5 transition disabled:opacity-40 ${
+   716→                  micOn
+   717→                    ? "border-white/15 bg-white/10 text-white hover:bg-white/20"
+   718→                    : "border-red-400/50 bg-red-500/20 text-red-400"
+   719→                }`}
+   720→              >
+   721→                {micOn ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />}
+   722→              </motion.button>
+   723→
+   724→              {call.type === "video" && (
+   725→                <motion.button
+   726→                  type="button"
+   727→                  whileTap={{ scale: 0.9 }}
+   728→                  onClick={toggleCam}
+   729→                  disabled={!localStream}
+   730→                  aria-label={camOn ? "Apagar cámara" : "Encender cámara"}
+   731→                  className={`flex h-13 w-13 items-center justify-center rounded-full border p-3.5 transition disabled:opacity-40 ${
+   732→                    camOn
+   733→                      ? "border-white/15 bg-white/10 text-white hover:bg-white/20"
+   734→                      : "border-red-400/50 bg-red-500/20 text-red-400"
+   735→                  }`}
+   736→                >
+   737→                  {camOn ? <Video className="h-5 w-5" /> : <VideoOff className="h-5 w-5" />}
+   738→                </motion.button>
+   739→              )}
+   740→
+   741→              <motion.button
+   742→                type="button"
+   743→                whileTap={{ scale: 0.9 }}
+   744→                onClick={hangup}
+   745→                aria-label="Colgar llamada"
+   746→                className="flex h-14 w-14 items-center justify-center rounded-full bg-red-500 text-white shadow-xl shadow-red-500/30 transition hover:bg-red-400"
+   747→              >
+   748→                <PhoneOff className="h-6 w-6" />
+   749→              </motion.button>
+   750→            </div>
+   751→          </motion.div>
+   752→        )}
+   753→      </AnimatePresence>
+   754→    </>
+   755→  );
+   756→}
+   757→

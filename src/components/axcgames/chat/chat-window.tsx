@@ -6,8 +6,10 @@ import {
   ArrowLeft,
   Hash,
   Info,
+  LogOut,
   Phone,
   Send,
+  Trash2,
   Users,
   Video,
   PhoneCall,
@@ -59,7 +61,10 @@ export default function ChatWindow({ onBack }: { onBack: () => void }) {
     sendMessage,
     setTyping,
     startCall,
+    leaveGroup,
+    deleteGroup,
   } = useAxStore();
+  const [confirmGroupAction, setConfirmGroupAction] = useState<"leave" | "delete" | null>(null);
 
   const conv = conversations.find((c) => c.id === activeConversationId);
   const messages = useMemo(
@@ -153,6 +158,30 @@ export default function ChatWindow({ onBack }: { onBack: () => void }) {
         </div>
 
         <div className="flex items-center gap-1.5">
+          {conv.type === "group" && (
+            <>
+              {conv.createdBy === me?.id && (
+                <button
+                  type="button"
+                  onClick={() => setConfirmGroupAction("delete")}
+                  title="Eliminar grupo"
+                  aria-label="Eliminar grupo"
+                  className="rounded-full p-2.5 text-white/60 transition hover:bg-red-500/15 hover:text-red-400 active:scale-90"
+                >
+                  <Trash2 className="h-4.5 w-4.5" />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setConfirmGroupAction("leave")}
+                title="Salir del grupo"
+                aria-label="Salir del grupo"
+                className="rounded-full p-2.5 text-white/60 transition hover:bg-red-500/15 hover:text-red-400 active:scale-90"
+              >
+                <LogOut className="h-4.5 w-4.5" />
+              </button>
+            </>
+          )}
           <button
             type="button"
             onClick={() => startCall(conv.id, "audio")}
@@ -173,6 +202,37 @@ export default function ChatWindow({ onBack }: { onBack: () => void }) {
           </button>
         </div>
       </div>
+
+      {/* Confirmación de salir/borrar grupo */}
+      {conv.type === "group" && confirmGroupAction && (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-red-400/20 bg-red-500/10 px-4 py-2.5 sm:px-5">
+          <p className="text-xs text-white/70">
+            {confirmGroupAction === "delete"
+              ? "¿Eliminar este grupo para todos los miembros?"
+              : "¿Salir de este grupo?"}
+          </p>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setConfirmGroupAction(null)}
+              className="rounded-full border border-white/10 px-3 py-1 text-xs font-semibold text-white/60 transition hover:bg-white/10"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (confirmGroupAction === "delete") deleteGroup(conv.id);
+                else leaveGroup(conv.id);
+                setConfirmGroupAction(null);
+              }}
+              className="rounded-full bg-red-500 px-3.5 py-1 text-xs font-bold text-white transition hover:bg-red-400"
+            >
+              {confirmGroupAction === "delete" ? "Eliminar" : "Salir"}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Mensajes */}
       <div className="axc-scroll min-h-0 flex-1 overflow-y-auto px-3 py-4 sm:px-5">

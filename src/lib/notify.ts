@@ -88,11 +88,12 @@ export async function requestNotificationPermission(): Promise<
 export function notifyDesktop(title: string, body: string, tag?: string): void {
   if (!notificationsSupported() || Notification.permission !== "granted") return;
   try {
+    const bp = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
     const n = new Notification(title, {
       body,
       tag,
-      icon: "/icon.png",
-      badge: "/icon.png",
+      icon: `${bp}/icon.png`,
+      badge: `${bp}/icon.png`,
       silent: true, // ya reproducimos nuestro propio sonido
     });
     n.onclick = () => {

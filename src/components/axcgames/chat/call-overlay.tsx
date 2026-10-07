@@ -1,24 +1,22 @@
 "use client";
 
+/**
+ * Capa de llamadas de voz/vídeo (WebRTC vía Trystero, sin servidor).
+ *
+ * - La señalización y los streams los gestiona el motor P2P (p2p.ts):
+ *   addStream/onPeerStream negocian las conexiones WebRTC.
+ * - El llamante empieza a emitir su stream cuando el primer participante
+ *   acepta; el receptor emite nada más aceptar.
+ * - Mantiene la misma interfaz visual que la versión con backend.
+ */
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import {
-  Mic,
-  MicOff,
-  Phone,
-  PhoneOff,
-  Video,
-  VideoOff,
-  Volume2,
-} from "lucide-react";
+import { Mic, MicOff, Phone, PhoneOff, Video, VideoOff, Volume2 } from "lucide-react";
 import { useAxStore, type AxUser } from "@/lib/store";
-import { getSocket } from "@/lib/socket";
+import { p2p, subscribeP2P } from "@/lib/p2p";
 import Avatar from "../avatar";
 import { useToast } from "@/hooks/use-toast";
-
-const ICE_CONFIG: RTCConfiguration = {
-  iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-};
 
 /** Timbre de llamada con WebAudio (best effort) */
 function useRinger() {
@@ -57,8 +55,8 @@ function useRinger() {
   const stop = useCallback(() => {
     if (timerRef.current !== null) {
       window.clearInterval(timerRef.current);
-      timerRef.current = null;
     }
+    timerRef.current = null;
   }, []);
 
   const start = useCallback(() => {
@@ -109,78 +107,74 @@ function VideoTile({
     }
   }, [stream]);
 
-  const hasVideo = stream ? stream.getVideoTracks().some((t) => t.enabled && t.readyState === "live") : false;
+  const hasVideo = Boolean(stream?.getVideoTracks().some((t) => t.enabled));
 
   return (
-    <motion.div
-      layout
-      initial={{ opacity: 0, scale: 0.95 }}
-      animate={{ opacity: 1, scale: 1 }}
-      exit={{ opacity: 0, scale: 0.95 }}
-      className="group relative aspect-video min-w-0 overflow-hidden rounded-2xl border border-white/10 bg-zinc-950"
-    >
+    <div className="relative min-h-40 overflow-hidden rounded-2xl border border-white/10 bg-black/60">
       <video
         ref={ref}
         autoPlay
         playsInline
         muted={muted}
         className={`h-full w-full object-cover ${mirrored ? "scale-x-[-1]" : ""} ${
-          hasVideo ? "" : "hidden"
+          hasVideo && !videoOff ? "" : "opacity-0"
         }`}
       />
-      {(!hasVideo || connecting) && (
+      {(!hasVideo || videoOff) && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
-          {connecting ? (
-            <Avatar displayName={label} color={color} size={64} />
-          ) : (
-            <Avatar displayName={label} color={color} size={64} />
+          <span className="flex h-16 w-16 items-center justify-center rounded-full" style={{ background: `${color}22` }}>
+            <Avatar displayName={label} color={color} size={56} />
+          </span>
+          {connecting && (
+            <span className="flex items-center gap-1.5 text-xs text-white/50">
+              <span className="axc-typing-dot h-1.5 w-1.5 rounded-full bg-amber-400" />
+              Conectando…
+            </span>
           )}
-          <p className="text-xs font-semibold text-white/60">
-            {connecting ? "Conectando…" : videoOff ? "Cámara desactivada" : "Sin vídeo"}
-          </p>
         </div>
       )}
-      {/* Etiqueta */}
-      <div className="absolute inset-x-0 bottom-0 flex items-center gap-2 bg-gradient-to-t from-black/80 to-transparent px-3 pb-2 pt-8">
-        <span className="truncate text-xs font-bold text-white drop-shadow">{label}</span>
-        {audioOff && <MicOff className="h-3.5 w-3.5 shrink-0 text-red-400" />}
+      <div className="absolute inset-x-0 bottom-0 flex items-center justify-between bg-gradient-to-t from-black/80 to-transparent px-3 py-2">
+        <span className="truncate text-xs font-bold text-white">{label}</span>
+        <span className="flex items-center gap-1.5">
+          {audioOff && <MicOff className="h-3.5 w-3.5 text-red-400" />}
+        </span>
       </div>
-    </motion.div>
+    </div>
   );
 }
 
 export default function CallLayer() {
   const {
     me,
+    conversations,
     call,
     incomingCall,
-    conversations,
     callPeerStates,
+    callStreams,
     acceptIncomingCall,
     declineIncomingCall,
     cancelCall,
     leaveCall,
     endCallIfActive,
-    setCallStatus,
     setPeerState,
   } = useAxStore();
   const { toast } = useToast();
   const ringer = useRinger();
 
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
-  const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({});
-  const [remoteIds, setRemoteIds] = useState<string[]>([]);
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
   const [now, setNow] = useState(Date.now());
 
-  const pcsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
-  const pendingIceRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
+  const streamAddedRef = useRef(false);
 
   const conv = useMemo(
-    () => conversations.find((c) => c.id === (call?.conversationId ?? incomingCall?.conversationId)),
-    [conversations, call, incomingCall]
+    () =>
+      conversations.find(
+        (c) => c.id === (call?.conversationId ?? incomingCall?.conversationId),
+      ),
+    [conversations, call, incomingCall],
   );
 
   const memberInfo = (id: string): AxUser | undefined =>
@@ -193,21 +187,12 @@ export default function CallLayer() {
     return () => window.clearInterval(t);
   }, [call]);
 
-  const cleanupMedia = useCallback(() => {
-    for (const pc of pcsRef.current.values()) {
-      try {
-        pc.close();
-      } catch {
-        /* noop */
-      }
-    }
-    pcsRef.current.clear();
-    pendingIceRef.current.clear();
+  // Limpiar stream local al terminar la llamada
+  const stopLocalMedia = useCallback(() => {
     localStreamRef.current?.getTracks().forEach((t) => t.stop());
     localStreamRef.current = null;
+    streamAddedRef.current = false;
     setLocalStream(null);
-    setRemoteStreams({});
-    setRemoteIds([]);
     setMicOn(true);
     setCamOn(true);
   }, []);
@@ -215,10 +200,11 @@ export default function CallLayer() {
   // Adquirir medios al entrar en llamada
   useEffect(() => {
     if (!call) {
-      cleanupMedia();
+      stopLocalMedia();
       return;
     }
     let cancelled = false;
+    streamAddedRef.current = false;
     (async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -234,8 +220,13 @@ export default function CallLayer() {
         }
         localStreamRef.current = stream;
         setLocalStream(stream);
+        // El receptor emite nada más aceptar; el llamante espera al primer
+        // "aceptado" (ver listener de eventos P2P más abajo)
+        if (call.role === "callee" && !streamAddedRef.current) {
+          streamAddedRef.current = true;
+          p2p.addCallStream(call.conversationId, stream);
+        }
       } catch {
-        // Sin micrófono/cámara: modo solo escucha con transceivers recvonly
         if (!cancelled) {
           localStreamRef.current = null;
           setLocalStream(null);
@@ -249,266 +240,50 @@ export default function CallLayer() {
     return () => {
       cancelled = true;
     };
-  }, [call?.conversationId]);
+     
+  }, [call?.conversationId, call?.role]);
 
-  const createPeer = useCallback(
-    async (remoteId: string, initiator: boolean, conversationId: string, video: boolean) => {
-      const socket = getSocket();
-      if (!socket || pcsRef.current.has(remoteId)) return;
-
-      const pc = new RTCPeerConnection(ICE_CONFIG);
-      pcsRef.current.set(remoteId, pc);
-      setRemoteIds((prev) => (prev.includes(remoteId) ? prev : [...prev, remoteId]));
-
-      pc.onicecandidate = (e) => {
-        if (e.candidate) {
-          socket.emit("call:ice", { conversationId, targetUserId: remoteId, candidate: e.candidate });
-        }
-      };
-
-      pc.ontrack = (e) => {
-        if (e.streams[0]) {
-          setRemoteStreams((prev) => ({ ...prev, [remoteId]: e.streams[0] }));
-        }
-      };
-
-      pc.onconnectionstatechange = () => {
-        if (pc.connectionState === "connected") {
-          setCallStatus("active");
-        }
-      };
-
-      const stream = localStreamRef.current;
-      if (stream) {
-        for (const track of stream.getTracks()) {
-          pc.addTrack(track, stream);
-        }
-      } else {
-        pc.addTransceiver("audio", { direction: "recvonly" });
-        if (video) pc.addTransceiver("video", { direction: "recvonly" });
-      }
-
-      if (initiator) {
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        socket.emit("call:offer", {
-          conversationId,
-          targetUserId: remoteId,
-          sdp: pc.localDescription,
-        });
-      }
-    },
-    [setCallStatus]
-  );
-
-  const flushIce = useCallback(async (userId: string) => {
-    const pc = pcsRef.current.get(userId);
-    if (!pc || !pc.remoteDescription) return;
-    const queue = pendingIceRef.current.get(userId) ?? [];
-    pendingIceRef.current.set(userId, []);
-    for (const candidate of queue) {
-      try {
-        await pc.addIceCandidate(candidate);
-      } catch {
-        /* candidato obsoleto */
-      }
-    }
-  }, []);
-
-  // Listeners de señalización
+  // Eventos P2P de la llamada (streams y respuestas) + timbre
   useEffect(() => {
-    const socket = getSocket();
-    if (!socket || !me) return;
-
-    const onIncoming = (data: { conversationId: string; type: "audio" | "video"; from: AxUser }) => {
-      const state = useAxStore.getState();
-      if (state.call) {
-        // Ocupado: rechazar automáticamente
-        socket.emit("call:decline", { conversationId: data.conversationId });
-        return;
-      }
-      if (state.incomingCall?.conversationId === data.conversationId) return;
-      useAxStore.setState({ incomingCall: data });
-      ringer.start();
-    };
-
-    const onPeerJoined = (data: { conversationId: string; userId: string }) => {
-      const state = useAxStore.getState();
-      if (state.call?.conversationId !== data.conversationId) return;
-      void createPeer(data.userId, true, data.conversationId, state.call.type === "video");
-    };
-
-    const onAccepted = (data: { conversationId: string; participantIds: string[] }) => {
-      const state = useAxStore.getState();
-      if (state.call?.conversationId !== data.conversationId) return;
-      // Los participantes existentes nos ofrecerán conexión; solo registramos
-      setRemoteIds((prev) => {
-        const next = [...prev];
-        for (const id of data.participantIds) {
-          if (!next.includes(id)) next.push(id);
+    const unsubscribe = subscribeP2P((e) => {
+      const currentCall = useAxStore.getState().call;
+      if (e.type === "call-accepted" && currentCall) {
+        // El primer participante aceptó: el llamante empieza a emitir
+        const stream = localStreamRef.current;
+        if (stream && !streamAddedRef.current) {
+          streamAddedRef.current = true;
+          p2p.addCallStream(currentCall.conversationId, stream);
         }
-        return next;
-      });
-    };
-
-    const onOffer = async (data: {
-      conversationId: string;
-      fromUserId: string;
-      sdp: RTCSessionDescriptionInit;
-    }) => {
-      const state = useAxStore.getState();
-      if (state.call?.conversationId !== data.conversationId) return;
-      let pc = pcsRef.current.get(data.fromUserId);
-      if (!pc) {
-        await createPeer(
-          data.fromUserId,
-          false,
-          data.conversationId,
-          state.call.type === "video"
-        );
-        pc = pcsRef.current.get(data.fromUserId);
-      }
-      if (!pc) return;
-      try {
-        await pc.setRemoteDescription(data.sdp);
-        await flushIce(data.fromUserId);
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        socket.emit("call:answer", {
-          conversationId: data.conversationId,
-          targetUserId: data.fromUserId,
-          sdp: pc.localDescription,
-        });
-      } catch (e) {
-        console.error("offer handling error", e);
-      }
-    };
-
-    const onAnswer = async (data: {
-      conversationId: string;
-      fromUserId: string;
-      sdp: RTCSessionDescriptionInit;
-    }) => {
-      const pc = pcsRef.current.get(data.fromUserId);
-      if (!pc) return;
-      try {
-        await pc.setRemoteDescription(data.sdp);
-        await flushIce(data.fromUserId);
-      } catch (e) {
-        console.error("answer handling error", e);
-      }
-    };
-
-    const onIce = (data: { conversationId: string; fromUserId: string; candidate: RTCIceCandidateInit }) => {
-      const state = useAxStore.getState();
-      if (state.call?.conversationId !== data.conversationId) return;
-      const pc = pcsRef.current.get(data.fromUserId);
-      if (pc && pc.remoteDescription) {
-        void pc.addIceCandidate(data.candidate).catch(() => undefined);
-      } else {
-        const q = pendingIceRef.current.get(data.fromUserId) ?? [];
-        q.push(data.candidate);
-        pendingIceRef.current.set(data.fromUserId, q);
-      }
-    };
-
-    const onPeerLeft = (data: { conversationId: string; userId: string }) => {
-      const state = useAxStore.getState();
-      if (state.call?.conversationId !== data.conversationId) return;
-      const pc = pcsRef.current.get(data.userId);
-      if (pc) {
-        try {
-          pc.close();
-        } catch {
-          /* noop */
+      } else if (e.type === "call-declined" && currentCall) {
+        toast({ description: `${e.user.displayName} rechazó la llamada.` });
+      } else if (e.type === "call-ended") {
+        if (currentCall?.conversationId === e.conversationId) {
+          const info = conv?.members.find((m) => m.id === e.user.id);
+          if (info) toast({ description: `${info.displayName} colgó la llamada.` });
         }
-        pcsRef.current.delete(data.userId);
+        endCallIfActive(e.conversationId);
+      } else if (e.type === "call-toggle") {
+        setPeerState(e.user.id, { audio: e.audio, video: e.video });
+      } else if (e.type === "peer-offline") {
+        const st = useAxStore.getState();
+        if (st.call) {
+          const info = st.conversations
+            .find((c) => c.id === st.call?.conversationId)
+            ?.members.find((m) => m.id === e.user.id);
+          if (info) toast({ description: `${info.displayName} salió de la llamada.` });
+          // En llamadas 1:1, si el otro se va, cerrar también
+          const c = st.conversations.find((x) => x.id === st.call?.conversationId);
+          if (c?.type === "dm") {
+            useAxStore.setState({ call: null, callPeerStates: {}, callStreams: {} });
+          }
+        }
       }
-      pendingIceRef.current.delete(data.userId);
-      setRemoteStreams((prev) => {
-        const next = { ...prev };
-        delete next[data.userId];
-        return next;
-      });
-      setRemoteIds((prev) => prev.filter((id) => id !== data.userId));
-      const conv = state.conversations.find((c) => c.id === data.conversationId);
-      const info = conv?.members.find((m) => m.id === data.userId);
-      if (info) {
-        toast({ description: `${info.displayName} salió de la llamada.` });
-      }
-      // En llamadas 1:1, si el otro cuelga, cerrar también la nuestra
-      if (conv?.type === "dm") {
-        useAxStore.setState({ call: null, callPeerStates: {} });
-        // El servidor terminará la llamada y generará el mensaje del sistema
-        const socket = getSocket();
-        socket?.emit("call:leave", { conversationId: data.conversationId });
-      }
-    };
-
-    const onEnded = (data: { conversationId: string }) => {
-      endCallIfActive(data.conversationId);
-    };
-
-    const onDeclined = (data: { conversationId: string; userId: string; displayName: string }) => {
-      const state = useAxStore.getState();
-      if (state.call?.conversationId !== data.conversationId) return;
-      toast({ description: `${data.displayName} rechazó la llamada.` });
-    };
-
-    const onPeerState = (data: { conversationId: string; userId: string; audio?: boolean; video?: boolean }) => {
-      const state = useAxStore.getState();
-      if (state.call?.conversationId !== data.conversationId) return;
-      setPeerState(data.userId, { audio: data.audio, video: data.video });
-    };
-
-    const onBusy = (data: { conversationId: string }) => {
-      const state = useAxStore.getState();
-      if (state.call?.conversationId === data.conversationId) {
-        toast({ description: "Ya hay una llamada en curso en este chat." });
-        useAxStore.setState({ call: null });
-      }
-    };
-
-    socket.off("call:incoming", onIncoming);
-    socket.on("call:incoming", onIncoming);
-    socket.off("call:peer-joined", onPeerJoined);
-    socket.on("call:peer-joined", onPeerJoined);
-    socket.off("call:accepted", onAccepted);
-    socket.on("call:accepted", onAccepted);
-    socket.off("call:offer", onOffer);
-    socket.on("call:offer", onOffer);
-    socket.off("call:answer", onAnswer);
-    socket.on("call:answer", onAnswer);
-    socket.off("call:ice", onIce);
-    socket.on("call:ice", onIce);
-    socket.off("call:peer-left", onPeerLeft);
-    socket.on("call:peer-left", onPeerLeft);
-    socket.off("call:ended", onEnded);
-    socket.on("call:ended", onEnded);
-    socket.off("call:declined", onDeclined);
-    socket.on("call:declined", onDeclined);
-    socket.off("call:peer-state", onPeerState);
-    socket.on("call:peer-state", onPeerState);
-    socket.off("call:busy", onBusy);
-    socket.on("call:busy", onBusy);
-
+    });
     return () => {
-      socket.off("call:incoming", onIncoming);
-      socket.off("call:peer-joined", onPeerJoined);
-      socket.off("call:accepted", onAccepted);
-      socket.off("call:offer", onOffer);
-      socket.off("call:answer", onAnswer);
-      socket.off("call:ice", onIce);
-      socket.off("call:peer-left", onPeerLeft);
-      socket.off("call:ended", onEnded);
-      socket.off("call:declined", onDeclined);
-      socket.off("call:peer-state", onPeerState);
-      socket.off("call:busy", onBusy);
+      unsubscribe();
     };
-  }, [me?.id, createPeer, flushIce, endCallIfActive, setPeerState, toast, ringer]);
-
-  // Referencia de info de miembros accesible desde los handlers
-  // (los handlers consultan el store directamente)
+     
+  }, [conv, toast, endCallIfActive, setPeerState]);
 
   // Timbre mientras hay llamada entrante
   useEffect(() => {
@@ -525,10 +300,7 @@ export default function CallLayer() {
     const next = !micOn;
     for (const t of stream.getAudioTracks()) t.enabled = next;
     setMicOn(next);
-    const socket = getSocket();
-    if (socket && call) {
-      socket.emit("call:toggle", { conversationId: call.conversationId, audio: next });
-    }
+    if (call) p2p.sendCallToggle(call.conversationId, next, camOn);
   };
 
   const toggleCam = () => {
@@ -537,13 +309,15 @@ export default function CallLayer() {
     const next = !camOn;
     for (const t of stream.getVideoTracks()) t.enabled = next;
     setCamOn(next);
-    const socket = getSocket();
-    if (socket && call) {
-      socket.emit("call:toggle", { conversationId: call.conversationId, video: next });
-    }
+    if (call) p2p.sendCallToggle(call.conversationId, micOn, next);
   };
 
   const hangup = () => {
+    const stream = localStreamRef.current;
+    if (stream && streamAddedRef.current && call) {
+      p2p.removeCallStream(call.conversationId, stream);
+    }
+    stopLocalMedia();
     if (call?.status === "connecting" && call.role === "caller") {
       cancelCall();
     } else {
@@ -552,6 +326,7 @@ export default function CallLayer() {
   };
 
   const durationSec = call ? Math.max(0, Math.floor((now - call.startedAt) / 1000)) : 0;
+  const remoteIds = Object.keys(callStreams);
 
   return (
     <>
@@ -690,14 +465,13 @@ export default function CallLayer() {
                   return (
                     <VideoTile
                       key={rid}
-                      stream={remoteStreams[rid] ?? null}
+                      stream={callStreams[rid]}
                       muted={false}
                       mirrored={false}
                       label={info?.displayName ?? "Participante"}
                       color={info?.avatarColor ?? "#fbbf24"}
                       audioOff={peerState?.audio === false}
                       videoOff={peerState?.video === false}
-                      connecting={!remoteStreams[rid]}
                     />
                   );
                 })}

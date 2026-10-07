@@ -19,7 +19,10 @@ const orbitron = Orbitron({
   weight: ["500", "700", "800", "900"],
 });
 
+const BP = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+
 export const metadata: Metadata = {
+  metadataBase: new URL("https://googlesitecom.github.io/nueva-pestana"),
   title: "nueva-pestaña",
   description:
     "Tu página de inicio: juegos, chat y amigos. Velocity GP, Emergency Strike, Apex Kart, Zona Cero y Jeffcraft. Sin descargas, juega al instante en tu navegador.",
@@ -35,8 +38,8 @@ export const metadata: Metadata = {
   ],
   authors: [{ name: "nueva-pestaña" }],
   icons: {
-    icon: [{ url: "/icon.png", type: "image/png", sizes: "512x512" }],
-    apple: [{ url: "/apple-icon.png", type: "image/png", sizes: "180x180" }],
+    icon: [{ url: `${BP}/icon.png`, type: "image/png", sizes: "512x512" }],
+    apple: [{ url: `${BP}/apple-icon.png`, type: "image/png", sizes: "180x180" }],
   },
   openGraph: {
     title: "nueva-pestaña",
@@ -44,7 +47,7 @@ export const metadata: Metadata = {
       "Tu portal premium: Velocity GP, Emergency Strike, Apex Kart, Zona Cero y Jeffcraft. Juega sin descargas.",
     siteName: "nueva-pestaña",
     type: "website",
-    images: [{ url: "/logo-full.png", width: 1024, height: 1024 }],
+    images: [{ url: `${BP}/logo-full.png`, width: 1024, height: 1024 }],
   },
 };
 

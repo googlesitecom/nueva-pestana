@@ -1,8 +1,32 @@
 "use client";
 
+/**
+ * Store principal de axcgames — versión 100% cliente (GitHub Pages).
+ *
+ * Mantiene la misma interfaz pública que la versión con backend para que
+ * la UI no cambie, pero toda la persistencia es localStorage y toda la
+ * comunicación en tiempo real es P2P (Trystero/WebRTC):
+ *
+ *  - Cuentas: localStorage con hash PBKDF2 (ver local-auth.ts)
+ *  - Amigos / solicitudes: localStorage + acciones P2P por el lobby
+ *  - Conversaciones (DM deterministas + grupos) y mensajes: localStorage
+ *  - Llamadas voz/vídeo: WebRTC gestionado por Trystero (p2p.ts)
+ */
+
 import { create } from "zustand";
-import { connectSocket, disconnectSocket, getSocket } from "@/lib/socket";
 import type { Game } from "@/lib/games";
+import {
+  getSessionUser,
+  loginAccount,
+  registerAccount,
+  setSession,
+} from "./local-auth";
+import {
+  LOBBY_ROOM,
+  p2p,
+  subscribeP2P,
+  type P2pEvent,
+} from "./p2p";
 
 export type View = "home" | "game" | "chat" | "auth";
 
@@ -50,6 +74,9 @@ export interface CallPeerState {
   video?: boolean;
 }
 
+const GROUP_COLORS = ["#f59e0b", "#10b981", "#06b6d4", "#8b5cf6", "#ec4899", "#f97316"];
+const MSG_CAP = 200;
+
 interface AxState {
   me: AxUser | null;
   meLoaded: boolean;
@@ -60,14 +87,14 @@ interface AxState {
   friends: AxUser[];
   incoming: FriendRequest[];
   outgoing: FriendRequest[];
+  onlineIds: Set<string>;
+  onlineUsersList: AxUser[];
 
   conversations: AxConversation[];
   activeConversationId: string | null;
   messagesByConv: Record<string, AxMessage[]>;
   typingByConv: Record<string, Record<string, { displayName: string; ts: number }>>;
-  onlineIds: Set<string>;
 
-  // Llamada activa (estado propio de este dispositivo)
   call: {
     conversationId: string;
     type: CallType;
@@ -77,8 +104,8 @@ interface AxState {
   } | null;
   incomingCall: { conversationId: string; type: CallType; from: AxUser } | null;
   callPeerStates: Record<string, CallPeerState>;
+  callStreams: Record<string, MediaStream>;
 
-  // Acciones
   setMe: (me: AxUser | null) => void;
   fetchMe: () => Promise<void>;
   login: (username: string, password: string) => Promise<{ ok: boolean; error?: string }>;
@@ -95,19 +122,22 @@ interface AxState {
   openAuth: () => void;
 
   connect: () => void;
-  initSocketListeners: () => void;
 
   loadFriends: () => Promise<void>;
   sendFriendRequest: (username: string) => Promise<{ ok: boolean; error?: string }>;
   respondFriendRequest: (friendshipId: string, action: "accept" | "decline") => Promise<void>;
+  cancelFriendRequest: (friendshipId: string) => Promise<void>;
   removeFriend: (userId: string) => Promise<void>;
 
   loadConversations: () => Promise<void>;
   createDm: (userId: string) => Promise<string | null>;
   createGroup: (name: string, memberIds: string[]) => Promise<string | null>;
+  leaveGroup: (conversationId: string) => void;
+  deleteGroup: (conversationId: string) => void;
   openConversation: (id: string) => Promise<void>;
   sendMessage: (content: string) => void;
   setTyping: (typing: boolean) => void;
+  insertCallLog: (kind: "audio" | "video", durationSec: number) => void;
 
   startCall: (conversationId: string, type: CallType) => void;
   acceptIncomingCall: () => void;
@@ -117,20 +147,326 @@ interface AxState {
   endCallIfActive: (conversationId: string) => void;
   setCallStatus: (status: "connecting" | "active") => void;
   setPeerState: (userId: string, state: CallPeerState) => void;
+  setRemoteStream: (userId: string, stream: MediaStream) => void;
+  removeRemoteStream: (userId: string) => void;
 
   totalUnread: () => number;
 }
 
-function api<T>(url: string, options?: RequestInit): Promise<T> {
-  return fetch(url, {
-    ...options,
-    headers: { "Content-Type": "application/json", ...(options?.headers ?? {}) },
-  }).then(async (r) => {
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error((data as { error?: string }).error ?? "Error de red");
-    return data as T;
+// ---------------------------------------------------------------------------
+// Persistencia local (por usuario logueado)
+// ---------------------------------------------------------------------------
+
+let currentUid: string | null = null;
+
+function k(name: string): string {
+  return `axcg:${name}:${currentUid ?? "anon"}`;
+}
+
+function read<T>(key: string, fallback: T): T {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function write(key: string, value: unknown): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    /* ignorar */
+  }
+}
+
+function persistFriends(s: AxState): void {
+  write(k("friends"), s.friends);
+  write(k("freqin"), s.incoming);
+  write(k("freqout"), s.outgoing);
+}
+
+function persistConvs(convs: AxConversation[]): void {
+  write(k("convs"), convs);
+}
+
+function persistMsgs(convId: string, msgs: AxMessage[]): void {
+  write(`${k("msgs")}:${convId}`, msgs.slice(-MSG_CAP));
+}
+
+export function dmConvId(a: string, b: string): string {
+  return `dm:${[a, b].sort().join(":")}`;
+}
+
+function sortConvs(convs: AxConversation[]): AxConversation[] {
+  return [...convs].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+}
+
+function makeDmConv(meUser: AxUser, other: AxUser): AxConversation {
+  const now = new Date().toISOString();
+  return {
+    id: dmConvId(meUser.id, other.id),
+    type: "dm",
+    name: null,
+    avatarColor: other.avatarColor,
+    createdBy: null,
+    updatedAt: now,
+    members: [meUser, other],
+    lastMessage: null,
+    unreadCount: 0,
+    lastReadAt: now,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Registro único de eventos P2P
+// ---------------------------------------------------------------------------
+
+let p2pHandlersRegistered = false;
+
+function ensureP2pHandlers(get: () => AxState, set: (partial: Partial<AxState>) => void): void {
+  if (p2pHandlersRegistered || typeof window === "undefined") return;
+  p2pHandlersRegistered = true;
+
+  const onEvent = (e: P2pEvent) => handleP2pEvent(e, get, set);
+  subscribeP2P(onEvent);
+}
+
+function handleP2pEvent(e: P2pEvent, get: () => AxState, set: (partial: Partial<AxState>) => void): void {
+  const s = get();
+  if (!s.me) return;
+
+  switch (e.type) {
+    case "peer-online": {
+      if (e.user.id === s.me.id) return;
+      if (!s.onlineIds.has(e.user.id)) {
+        const next = new Set(s.onlineIds);
+        next.add(e.user.id);
+        set({ onlineIds: next, onlineUsersList: p2p.onlineUsers() });
+      }
+      return;
+    }
+    case "peer-offline": {
+      if (!s.onlineIds.has(e.user.id)) return;
+      const next = new Set(s.onlineIds);
+      next.delete(e.user.id);
+      set({ onlineIds: next, onlineUsersList: p2p.onlineUsers() });
+      if (s.call && s.callStreams[e.user.id]) {
+        const streams = { ...s.callStreams };
+        delete streams[e.user.id];
+        set({ callStreams: streams });
+      }
+      return;
+    }
+    case "message": {
+      const m = e.message;
+      if (m.senderId === s.me.id) return;
+      const list = s.messagesByConv[m.conversationId] ?? [];
+      if (list.some((x) => x.id === m.id)) return;
+      const conv =
+        s.conversations.find((c) => c.id === m.conversationId) ??
+        (m.senderId !== s.me.id
+          ? (() => {
+              const friend = s.friends.find((f) => f.id === m.senderId);
+              if (!friend) return null;
+              const conv2 = makeDmConv(s.me as AxUser, friend);
+              const added = sortConvs([...s.conversations, conv2]);
+              persistConvs(added);
+              return conv2;
+            })()
+          : null);
+      if (!conv) return;
+      const nextList = [...list, m];
+      persistMsgs(m.conversationId, nextList);
+      const viewing = s.view === "chat" && s.activeConversationId === m.conversationId;
+      const updated = sortConvs(
+        s.conversations.map((c) =>
+          c.id === m.conversationId
+            ? { ...c, lastMessage: m, updatedAt: m.createdAt, unreadCount: viewing ? 0 : c.unreadCount + 1 }
+            : c,
+        ),
+      );
+      persistConvs(updated);
+      const typing = { ...(s.typingByConv[m.conversationId] ?? {}) };
+      if (typing[m.senderId]) {
+        delete typing[m.senderId];
+      }
+      set({
+        messagesByConv: { ...s.messagesByConv, [m.conversationId]: nextList },
+        conversations: updated,
+        typingByConv: { ...s.typingByConv, [m.conversationId]: typing },
+      });
+      return;
+    }
+    case "typing": {
+      const cur = { ...(s.typingByConv[e.conversationId] ?? {}) };
+      if (e.typing) cur[e.userId] = { displayName: e.displayName, ts: Date.now() };
+      else delete cur[e.userId];
+      set({ typingByConv: { ...s.typingByConv, [e.conversationId]: cur } });
+      return;
+    }
+    case "friend-request": {
+      const user = e.user;
+      if (s.friends.some((f) => f.id === user.id)) {
+        p2p.sendFriendAccepted(user);
+        return;
+      }
+      const outIdx = s.outgoing.findIndex((r) => r.user.id === user.id);
+      if (outIdx >= 0) {
+        // Aceptación mutua: ambos enviaron solicitudes
+        friendAccept(user, get, set);
+        p2p.sendFriendAccepted(user);
+        return;
+      }
+      if (s.incoming.some((r) => r.user.id === user.id)) return;
+      const incoming = [...s.incoming, { friendshipId: `fr-${user.id}`, user }];
+      persistFriends({ ...s, incoming } as AxState);
+      set({ incoming });
+      return;
+    }
+    case "friend-accepted": {
+      friendAccept(e.user, get, set);
+      return;
+    }
+    case "friend-removed": {
+      if (!s.friends.some((f) => f.id === e.userId)) return;
+      const friends = s.friends.filter((f) => f.id !== e.userId);
+      persistFriends({ ...s, friends } as AxState);
+      set({ friends });
+      return;
+    }
+    case "group-invite": {
+      if (s.conversations.some((c) => c.id === e.group.id)) return;
+      const convs = sortConvs([...s.conversations, e.group]);
+      persistConvs(convs);
+      for (const c of [e.group]) p2p.joinRoom(c.id);
+      set({ conversations: convs });
+      return;
+    }
+    case "group-leave": {
+      const convs = s.conversations.map((c) =>
+        c.id === e.conversationId
+          ? { ...c, members: c.members.filter((m) => m.id !== e.user.id) }
+          : c,
+      );
+      persistConvs(convs);
+      set({ conversations: convs });
+      return;
+    }
+    case "group-delete": {
+      const convs = s.conversations.filter((c) => c.id !== e.conversationId);
+      persistConvs(convs);
+      p2p.leaveRoom(e.conversationId);
+      set({
+        conversations: convs,
+        activeConversationId:
+          s.activeConversationId === e.conversationId ? null : s.activeConversationId,
+      });
+      return;
+    }
+    case "call-incoming": {
+      if (s.call) {
+        p2p.declineCall(e.conversationId);
+        return;
+      }
+      set({
+        incomingCall: {
+          conversationId: e.conversationId,
+          type: e.callType,
+          from: e.from,
+        },
+      });
+      return;
+    }
+    case "call-accepted": {
+      if (s.call?.conversationId === e.conversationId) {
+        set({ call: { ...s.call, status: "active" } });
+      }
+      return;
+    }
+    case "call-declined": {
+      if (s.call?.conversationId === e.conversationId) {
+        set({ call: null, callPeerStates: {}, callStreams: {} });
+      }
+      return;
+    }
+    case "call-ended": {
+      if (s.call?.conversationId === e.conversationId && s.call.status === "active") {
+        insertCallLogFor(s, set, s.call.type, Math.floor((Date.now() - s.call.startedAt) / 1000));
+      }
+      if (s.call?.conversationId === e.conversationId || s.incomingCall?.conversationId === e.conversationId) {
+        set({ call: null, incomingCall: null, callPeerStates: {}, callStreams: {} });
+      }
+      return;
+    }
+    case "call-toggle": {
+      set({ callPeerStates: { ...s.callPeerStates, [e.user.id]: { audio: e.audio, video: e.video } } });
+      return;
+    }
+    case "stream": {
+      set({ callStreams: { ...s.callStreams, [e.user.id]: e.stream } });
+      return;
+    }
+  }
+}
+
+function insertCallLogFor(
+  s: AxState,
+  set: (partial: Partial<AxState>) => void,
+  kind: "audio" | "video",
+  durationSec: number,
+): void {
+  if (!s.call || !s.me) return;
+  const m: AxMessage = {
+    id: crypto.randomUUID(),
+    conversationId: s.call.conversationId,
+    senderId: s.me.id,
+    content: JSON.stringify({ event: "ended", durationSec, kind }),
+    type: "call",
+    createdAt: new Date().toISOString(),
+    sender: s.me,
+  };
+  const list = [...(s.messagesByConv[s.call.conversationId] ?? []), m];
+  persistMsgs(s.call.conversationId, list);
+  const convs = sortConvs(
+    s.conversations.map((c) =>
+      c.id === s.call.conversationId ? { ...c, lastMessage: m, updatedAt: m.createdAt } : c,
+    ),
+  );
+  persistConvs(convs);
+  set({
+    messagesByConv: { ...s.messagesByConv, [s.call.conversationId]: list },
+    conversations: convs,
   });
 }
+
+function friendAccept(
+  user: AxUser,
+  get: () => AxState,
+  set: (partial: Partial<AxState>) => void,
+): void {
+  const s = get();
+  if (!s.me) return;
+  if (s.friends.some((f) => f.id === user.id)) return;
+  const friends = [...s.friends, user];
+  const incoming = s.incoming.filter((r) => r.user.id !== user.id);
+  const outgoing = s.outgoing.filter((r) => r.user.id !== user.id);
+  let convs = s.conversations;
+  const dmId = dmConvId(s.me.id, user.id);
+  if (!convs.some((c) => c.id === dmId)) {
+    convs = sortConvs([...convs, makeDmConv(s.me, user)]);
+    p2p.joinRoom(dmId);
+  }
+  persistFriends({ ...s, friends, incoming, outgoing } as AxState);
+  persistConvs(convs);
+  set({ friends, incoming, outgoing, conversations: convs });
+}
+
+// ---------------------------------------------------------------------------
+// Store
+// ---------------------------------------------------------------------------
 
 export const useAxStore = create<AxState>((set, get) => ({
   me: null,
@@ -142,63 +478,83 @@ export const useAxStore = create<AxState>((set, get) => ({
   friends: [],
   incoming: [],
   outgoing: [],
+  onlineIds: new Set<string>(),
+  onlineUsersList: [],
 
   conversations: [],
   activeConversationId: null,
   messagesByConv: {},
   typingByConv: {},
-  onlineIds: new Set<string>(),
 
   call: null,
   incomingCall: null,
   callPeerStates: {},
+  callStreams: {},
 
   setMe: (me) => set({ me, meLoaded: true }),
 
   fetchMe: async () => {
-    try {
-      const data = await api<{ user: AxUser }>("/api/auth/me");
-      set({ me: data.user, meLoaded: true });
-    } catch {
+    const user = getSessionUser();
+    if (!user) {
       set({ me: null, meLoaded: true });
+      return;
     }
+    currentUid = user.id;
+    set({
+      me: user,
+      meLoaded: true,
+      friends: read(k("friends"), [] as AxUser[]),
+      incoming: read(k("freqin"), [] as FriendRequest[]),
+      outgoing: read(k("freqout"), [] as FriendRequest[]),
+      conversations: sortConvs(read(k("convs"), [] as AxConversation[])),
+      onlineIds: p2p.onlineUserIds(),
+      onlineUsersList: p2p.onlineUsers(),
+    });
+    get().connect();
+    for (const c of get().conversations) p2p.joinRoom(c.id);
   },
 
   login: async (username, password) => {
-    try {
-      const data = await api<{ user: AxUser }>("/api/auth/login", {
-        method: "POST",
-        body: JSON.stringify({ username, password }),
-      });
-      set({ me: data.user });
-      get().connect();
-      return { ok: true };
-    } catch (e) {
-      return { ok: false, error: (e as Error).message };
-    }
+    const res = await loginAccount(username, password);
+    if (!res.ok || !res.user) return { ok: false, error: res.error };
+    currentUid = res.user.id;
+    set({
+      me: res.user,
+      meLoaded: true,
+      friends: read(k("friends"), [] as AxUser[]),
+      incoming: read(k("freqin"), [] as FriendRequest[]),
+      outgoing: read(k("freqout"), [] as FriendRequest[]),
+      conversations: sortConvs(read(k("convs"), [] as AxConversation[])),
+      onlineIds: new Set<string>(),
+      onlineUsersList: [],
+    });
+    get().connect();
+    for (const c of get().conversations) p2p.joinRoom(c.id);
+    return { ok: true };
   },
 
   register: async (username, password, displayName) => {
-    try {
-      const data = await api<{ user: AxUser }>("/api/auth/register", {
-        method: "POST",
-        body: JSON.stringify({ username, password, displayName }),
-      });
-      set({ me: data.user });
-      get().connect();
-      return { ok: true };
-    } catch (e) {
-      return { ok: false, error: (e as Error).message };
-    }
+    const res = await registerAccount(username, password, displayName);
+    if (!res.ok || !res.user) return { ok: false, error: res.error };
+    currentUid = res.user.id;
+    set({
+      me: res.user,
+      meLoaded: true,
+      friends: [],
+      incoming: [],
+      outgoing: [],
+      conversations: [],
+      onlineIds: new Set<string>(),
+      onlineUsersList: [],
+    });
+    get().connect();
+    return { ok: true };
   },
 
   logout: async () => {
-    try {
-      await api("/api/auth/logout", { method: "POST" });
-    } catch {
-      /* continuar */
-    }
-    disconnectSocket();
+    setSession(null);
+    p2p.stop();
+    currentUid = null;
     set({
       me: null,
       view: "home",
@@ -209,8 +565,12 @@ export const useAxStore = create<AxState>((set, get) => ({
       activeConversationId: null,
       messagesByConv: {},
       onlineIds: new Set<string>(),
+      onlineUsersList: [],
       call: null,
       incomingCall: null,
+      callStreams: {},
+      callPeerStates: {},
+      socketConnected: false,
     });
   },
 
@@ -244,264 +604,221 @@ export const useAxStore = create<AxState>((set, get) => ({
 
   connect: () => {
     const { me } = get();
-    if (!me) return;
-    const socket = connectSocket();
-
-    socket.off("connect");
-    socket.off("disconnect");
-    socket.on("connect", () => {
-      set({ socketConnected: true });
-      // Refrescar datos al conectar (y reconectar): mantiene los badges y
-      // notificaciones al día aunque el usuario no abra el chat
-      void get().loadConversations();
-      void get().loadFriends();
-    });
-    socket.on("disconnect", () => set({ socketConnected: false }));
-
-    if (!socket.data?.axcInit) {
-      socket.data = { ...socket.data, axcInit: true };
-      get().initSocketListeners();
-    }
-    if (!socket.connected) socket.connect();
-  },
-
-  initSocketListeners: () => {
-    const socket = getSocket();
-    if (!socket) return;
-
-    socket.on("message:new", (payload: { message: AxMessage; clientId: string | null }) => {
-      const { message } = payload;
-      const state = get();
-      const list = state.messagesByConv[message.conversationId] ?? [];
-      // Deduplicar (mensaje optimista local con mismo clientId)
-      if (payload.clientId && list.some((m) => m.id === payload.clientId)) {
-        set({
-          messagesByConv: {
-            ...state.messagesByConv,
-            [message.conversationId]: list.map((m) =>
-              m.id === payload.clientId ? message : m
-            ),
-          },
-        });
-      } else if (!list.some((m) => m.id === message.id)) {
-        set({
-          messagesByConv: {
-            ...state.messagesByConv,
-            [message.conversationId]: [...list, message],
-          },
-        });
-      }
-      // Actualizar lista de conversaciones (lastMessage + orden)
-      const convs = get().conversations.map((c) =>
-        c.id === message.conversationId
-          ? { ...c, lastMessage: message, updatedAt: message.createdAt }
-          : c
-      );
-      convs.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
-      const isActive =
-        get().activeConversationId === message.conversationId &&
-        (get().view === "chat" || get().call?.conversationId === message.conversationId);
-      const isMine = message.senderId === get().me?.id;
-      if (!isActive && !isMine) {
-        set({ conversations: convs });
-        get().loadConversations();
-      } else if (isActive && !isMine) {
-        void fetch(`/api/conversations/${message.conversationId}/read`, { method: "POST" });
-        set({ conversations: convs });
-      } else {
-        set({ conversations: convs });
-      }
-      // Limpiar typing del remitente
-      const typing = { ...(get().typingByConv[message.conversationId] ?? {}) };
-      if (typing[message.senderId]) {
-        delete typing[message.senderId];
-        set({ typingByConv: { ...get().typingByConv, [message.conversationId]: typing } });
-      }
-    });
-
-    socket.on("typing", (data: { conversationId: string; userId: string; displayName: string; typing: boolean }) => {
-      const cur = { ...(get().typingByConv[data.conversationId] ?? {}) };
-      if (data.typing) {
-        cur[data.userId] = { displayName: data.displayName, ts: Date.now() };
-      } else {
-        delete cur[data.userId];
-      }
-      set({ typingByConv: { ...get().typingByConv, [data.conversationId]: cur } });
-    });
-
-    socket.on("presence:init", (data: { onlineUserIds: string[] }) => {
-      set({ onlineIds: new Set(data.onlineUserIds) });
-    });
-
-    socket.on("presence:update", (data: { userId: string; online: boolean }) => {
-      const next = new Set(get().onlineIds);
-      if (data.online) next.add(data.userId);
-      else next.delete(data.userId);
-      set({ onlineIds: next });
-    });
-
-    socket.on("friends:refresh", () => {
-      if (get().me) void get().loadFriends();
-    });
-
-    socket.on("conversations:refresh", () => {
-      if (get().me) void get().loadConversations();
+    if (!me || typeof window === "undefined") return;
+    ensureP2pHandlers(get, set);
+    void p2p.start(me).then(() => {
+      if (get().me?.id === me.id) set({ socketConnected: true });
     });
   },
 
   loadFriends: async () => {
-    try {
-      const data = await api<{ friends: AxUser[]; incoming: FriendRequest[]; outgoing: FriendRequest[] }>(
-        "/api/friends"
-      );
-      set({ friends: data.friends, incoming: data.incoming, outgoing: data.outgoing });
-    } catch {
-      /* sin sesión */
-    }
+    if (!currentUid) return;
+    set({
+      friends: read(k("friends"), [] as AxUser[]),
+      incoming: read(k("freqin"), [] as FriendRequest[]),
+      outgoing: read(k("freqout"), [] as FriendRequest[]),
+    });
   },
 
   sendFriendRequest: async (username) => {
-    try {
-      const data = await api<{ accepted: boolean; user: AxUser }>("/api/friends", {
-        method: "POST",
-        body: JSON.stringify({ username }),
-      });
-      if (!data.accepted) {
-        // notificar al destino en tiempo real
-        getSocket()?.emit("friends:refresh-ping", { targetUserId: data.user.id });
-      } else {
-        // se aceptó automáticamente la solicitud inversa: ambos refrescan
-        getSocket()?.emit("friends:refresh-ping", { targetUserId: data.user.id });
-        void get().loadConversations();
-      }
-      await get().loadFriends();
-      return { ok: true };
-    } catch (e) {
-      return { ok: false, error: (e as Error).message };
+    const s = get();
+    if (!s.me) return { ok: false, error: "Inicia sesión primero." };
+    const clean = username.trim().toLowerCase();
+    const user = p2p.onlineUsers().find((u) => u.username === clean);
+    if (!user) {
+      return {
+        ok: false,
+        error: `@${clean} no está conectado ahora mismo. El chat es directo entre navegadores: pedidle estar en línea a la vez.`,
+      };
     }
+    if (user.id === s.me.id) return { ok: false, error: "No puedes añadirte a ti mismo." };
+    if (s.friends.some((f) => f.id === user.id)) {
+      return { ok: false, error: "Ya sois amigos." };
+    }
+    const inIdx = s.incoming.findIndex((r) => r.user.id === user.id);
+    if (inIdx >= 0) {
+      friendAccept(user, get, set);
+      p2p.sendFriendAccepted(user);
+      return { ok: true };
+    }
+    if (s.outgoing.some((r) => r.user.id === user.id)) {
+      return { ok: false, error: "Ya enviaste una solicitud a este usuario." };
+    }
+    const outgoing = [...s.outgoing, { friendshipId: `fs-${user.id}`, user }];
+    persistFriends({ ...s, outgoing } as AxState);
+    set({ outgoing });
+    p2p.sendFriendRequest(user);
+    return { ok: true };
   },
 
   respondFriendRequest: async (friendshipId, action) => {
-    try {
-      const data = await api<{ user?: AxUser }>(`/api/friends/requests/${friendshipId}`, {
-        method: "POST",
-        body: JSON.stringify({ action }),
-      });
-      await get().loadFriends();
-      if (action === "accept" && data.user) {
-        getSocket()?.emit("friends:refresh-ping", { targetUserId: data.user.id });
-        getSocket()?.emit("conversations:refresh-ping", { targetUserIds: [data.user.id] });
-      }
-    } catch {
-      /* ignorar */
+    const s = get();
+    const req = s.incoming.find((r) => r.friendshipId === friendshipId);
+    if (!req) return;
+    if (action === "accept") {
+      friendAccept(req.user, get, set);
+      p2p.sendFriendAccepted(req.user);
+    } else {
+      const incoming = s.incoming.filter((r) => r.friendshipId !== friendshipId);
+      persistFriends({ ...s, incoming } as AxState);
+      set({ incoming });
     }
+  },
+
+  cancelFriendRequest: async (friendshipId) => {
+    const s = get();
+    const outgoing = s.outgoing.filter((r) => r.friendshipId !== friendshipId);
+    persistFriends({ ...s, outgoing } as AxState);
+    set({ outgoing });
   },
 
   removeFriend: async (userId) => {
-    try {
-      await api(`/api/friends/${userId}`, { method: "DELETE" });
-      getSocket()?.emit("friends:refresh-ping", { targetUserId: userId });
-      await get().loadFriends();
-    } catch {
-      /* ignorar */
-    }
+    const s = get();
+    const friends = s.friends.filter((f) => f.id !== userId);
+    persistFriends({ ...s, friends } as AxState);
+    set({ friends });
+    p2p.sendFriendRemoved(userId);
   },
 
   loadConversations: async () => {
-    try {
-      const data = await api<{ conversations: AxConversation[] }>("/api/conversations");
-      set({ conversations: data.conversations });
-    } catch {
-      /* sin sesión */
-    }
+    if (!currentUid) return;
+    set({ conversations: sortConvs(read(k("convs"), [] as AxConversation[])) });
   },
 
   createDm: async (userId) => {
-    try {
-      const data = await api<{ conversationId: string }>("/api/conversations", {
-        method: "POST",
-        body: JSON.stringify({ type: "dm", userId }),
-      });
-      await get().loadConversations();
-      if (data.conversationId) {
-        getSocket()?.emit("conversations:refresh-ping", { targetUserIds: [userId] });
-        await get().openConversation(data.conversationId);
-      }
-      return data.conversationId;
-    } catch {
-      return null;
+    const s = get();
+    if (!s.me) return null;
+    const friend = s.friends.find((f) => f.id === userId);
+    if (!friend) return null;
+    const dmId = dmConvId(s.me.id, userId);
+    let convs = s.conversations;
+    if (!convs.some((c) => c.id === dmId)) {
+      convs = sortConvs([...convs, makeDmConv(s.me, friend)]);
+      persistConvs(convs);
+      p2p.joinRoom(dmId);
+      set({ conversations: convs });
     }
+    await get().openConversation(dmId);
+    return dmId;
   },
 
   createGroup: async (name, memberIds) => {
-    try {
-      const data = await api<{ conversationId: string }>("/api/conversations", {
-        method: "POST",
-        body: JSON.stringify({ type: "group", name, memberIds }),
-      });
-      await get().loadConversations();
-      if (data.conversationId) {
-        getSocket()?.emit("conversations:refresh-ping", { targetUserIds: memberIds });
-        await get().openConversation(data.conversationId);
-      }
-      return data.conversationId;
-    } catch {
-      return null;
-    }
+    const s = get();
+    if (!s.me) return null;
+    const members = [
+      s.me,
+      ...memberIds
+        .map((id) => s.friends.find((f) => f.id === id))
+        .filter((f): f is AxUser => Boolean(f)),
+    ];
+    const now = new Date().toISOString();
+    const conv: AxConversation = {
+      id: `grp:${crypto.randomUUID()}`,
+      type: "group",
+      name: name.slice(0, 40),
+      avatarColor: GROUP_COLORS[Math.floor(Math.random() * GROUP_COLORS.length)],
+      createdBy: s.me.id,
+      updatedAt: now,
+      members,
+      lastMessage: null,
+      unreadCount: 0,
+      lastReadAt: now,
+    };
+    const convs = sortConvs([...s.conversations, conv]);
+    persistConvs(convs);
+    p2p.joinRoom(conv.id);
+    set({ conversations: convs });
+    p2p.sendGroupInvite(conv, memberIds, s.me.displayName);
+    await get().openConversation(conv.id);
+    return conv.id;
+  },
+
+  leaveGroup: (conversationId) => {
+    const s = get();
+    const conv = s.conversations.find((c) => c.id === conversationId);
+    if (!conv || conv.type !== "group") return;
+    p2p.sendGroupLeave(conversationId);
+    p2p.leaveRoom(conversationId);
+    const convs = s.conversations.filter((c) => c.id !== conversationId);
+    persistConvs(convs);
+    set({
+      conversations: convs,
+      activeConversationId:
+        s.activeConversationId === conversationId ? null : s.activeConversationId,
+    });
+  },
+
+  deleteGroup: (conversationId) => {
+    const s = get();
+    const conv = s.conversations.find((c) => c.id === conversationId);
+    if (!conv || conv.type !== "group") return;
+    p2p.sendGroupDelete(conversationId);
+    p2p.leaveRoom(conversationId);
+    const convs = s.conversations.filter((c) => c.id !== conversationId);
+    persistConvs(convs);
+    set({
+      conversations: convs,
+      activeConversationId:
+        s.activeConversationId === conversationId ? null : s.activeConversationId,
+    });
   },
 
   openConversation: async (id) => {
     set({ activeConversationId: id });
-    try {
-      const data = await api<{ messages: AxMessage[] }>(`/api/conversations/${id}/messages`);
-      set((s) => ({ messagesByConv: { ...s.messagesByConv, [id]: data.messages } }));
-      await fetch(`/api/conversations/${id}/read`, { method: "POST" });
-      set((s) => ({
-        conversations: s.conversations.map((c) =>
-          c.id === id ? { ...c, unreadCount: 0 } : c
-        ),
-      }));
-    } catch {
-      /* ignorar */
-    }
+    const s = get();
+    if (!currentUid) return;
+    const msgs = read<AxMessage[]>(`${k("msgs")}:${id}`, []);
+    const convs = s.conversations.map((c) =>
+      c.id === id ? { ...c, unreadCount: 0, lastReadAt: new Date().toISOString() } : c,
+    );
+    persistConvs(convs);
+    set({
+      messagesByConv: { ...s.messagesByConv, [id]: msgs },
+      conversations: convs,
+    });
   },
 
   sendMessage: (content) => {
-    const socket = getSocket();
-    const conversationId = get().activeConversationId;
+    const s = get();
+    const conversationId = s.activeConversationId;
     const text = content.trim();
-    if (!socket || !conversationId || !text) return;
-    const me = get().me!;
-    const clientId = `tmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    // Mensaje optimista
-    const optimistic: AxMessage = {
-      id: clientId,
+    if (!s.me || !conversationId || !text) return;
+    const m: AxMessage = {
+      id: crypto.randomUUID(),
       conversationId,
-      senderId: me.id,
+      senderId: s.me.id,
       content: text,
       type: "text",
       createdAt: new Date().toISOString(),
-      sender: me,
+      sender: s.me,
     };
-    set((s) => ({
-      messagesByConv: {
-        ...s.messagesByConv,
-        [conversationId]: [...(s.messagesByConv[conversationId] ?? []), optimistic],
-      },
-    }));
-    socket.emit("message:send", { conversationId, content: text, clientId });
+    const list = [...(s.messagesByConv[conversationId] ?? []), m];
+    persistMsgs(conversationId, list);
+    const convs = sortConvs(
+      s.conversations.map((c) =>
+        c.id === conversationId ? { ...c, lastMessage: m, updatedAt: m.createdAt } : c,
+      ),
+    );
+    persistConvs(convs);
+    set({
+      messagesByConv: { ...s.messagesByConv, [conversationId]: list },
+      conversations: convs,
+    });
+    p2p.sendMessage(conversationId, m);
   },
 
   setTyping: (typing) => {
-    const socket = getSocket();
     const conversationId = get().activeConversationId;
-    if (!socket || !conversationId) return;
-    socket.emit("typing", { conversationId, typing });
+    if (!conversationId) return;
+    p2p.sendTyping(conversationId, typing);
+  },
+
+  insertCallLog: (kind, durationSec) => {
+    const s = get();
+    insertCallLogFor(s, set, kind, durationSec);
   },
 
   startCall: (conversationId, type) => {
-    const socket = getSocket();
-    if (!socket) return;
     set({
       call: {
         conversationId,
@@ -511,14 +828,14 @@ export const useAxStore = create<AxState>((set, get) => ({
         startedAt: Date.now(),
       },
       callPeerStates: {},
+      callStreams: {},
     });
-    socket.emit("call:start", { conversationId, type });
+    p2p.startCall(conversationId, type);
   },
 
   acceptIncomingCall: () => {
-    const socket = getSocket();
     const incoming = get().incomingCall;
-    if (!socket || !incoming) return;
+    if (!incoming) return;
     set({
       incomingCall: null,
       call: {
@@ -529,41 +846,46 @@ export const useAxStore = create<AxState>((set, get) => ({
         startedAt: Date.now(),
       },
       callPeerStates: {},
+      callStreams: {},
     });
-    socket.emit("call:accept", { conversationId: incoming.conversationId });
+    p2p.acceptCall(incoming.conversationId);
   },
 
   declineIncomingCall: () => {
-    const socket = getSocket();
     const incoming = get().incomingCall;
-    if (!socket || !incoming) return;
-    socket.emit("call:decline", { conversationId: incoming.conversationId });
+    if (!incoming) return;
+    p2p.declineCall(incoming.conversationId);
     set({ incomingCall: null });
   },
 
   cancelCall: () => {
-    const socket = getSocket();
     const call = get().call;
     if (!call) return;
-    if (socket && call.role === "caller" && call.status === "connecting") {
-      socket.emit("call:cancel", { conversationId: call.conversationId });
+    if (call.role === "caller" && call.status === "connecting") {
+      p2p.endCall(call.conversationId);
     }
-    set({ call: null, callPeerStates: {} });
+    set({ call: null, callPeerStates: {}, callStreams: {} });
   },
 
   leaveCall: () => {
-    const socket = getSocket();
     const call = get().call;
     if (!call) return;
-    if (socket) socket.emit("call:leave", { conversationId: call.conversationId });
-    set({ call: null, callPeerStates: {} });
+    p2p.endCall(call.conversationId);
+    if (call.status === "active") {
+      insertCallLogFor(get(), set, call.type, Math.floor((Date.now() - call.startedAt) / 1000));
+    }
+    set({ call: null, callPeerStates: {}, callStreams: {} });
   },
 
   endCallIfActive: (conversationId) => {
-    if (get().call?.conversationId === conversationId) {
-      set({ call: null, callPeerStates: {} });
+    const s = get();
+    if (s.call?.conversationId === conversationId) {
+      if (s.call.status === "active") {
+        insertCallLogFor(s, set, s.call.type, Math.floor((Date.now() - s.call.startedAt) / 1000));
+      }
+      set({ call: null, callPeerStates: {}, callStreams: {} });
     }
-    if (get().incomingCall?.conversationId === conversationId) {
+    if (s.incomingCall?.conversationId === conversationId) {
       set({ incomingCall: null });
     }
   },
@@ -575,6 +897,19 @@ export const useAxStore = create<AxState>((set, get) => ({
 
   setPeerState: (userId, state) => {
     set((s) => ({ callPeerStates: { ...s.callPeerStates, [userId]: state } }));
+  },
+
+  setRemoteStream: (userId, stream) => {
+    set((s) => ({ callStreams: { ...s.callStreams, [userId]: stream } }));
+  },
+
+  removeRemoteStream: (userId) => {
+    set((s) => {
+      if (!s.callStreams[userId]) return s;
+      const streams = { ...s.callStreams };
+      delete streams[userId];
+      return { callStreams: streams };
+    });
   },
 
   totalUnread: () => {

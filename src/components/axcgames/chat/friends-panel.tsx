@@ -7,6 +7,7 @@ import {
   Bell,
   Check,
   Clock,
+  Info,
   MessageSquare,
   Phone,
   Search,
@@ -312,8 +313,7 @@ function CancelRequestButton({ friendshipId }: { friendshipId: string }) {
       onClick={async () => {
         setLoading(true);
         try {
-          await fetch(`/api/friends/requests/${friendshipId}`, { method: "DELETE" });
-          await useAxStore.getState().loadFriends();
+          await useAxStore.getState().cancelFriendRequest(friendshipId);
         } finally {
           setLoading(false);
         }
@@ -329,8 +329,16 @@ function AddFriendForm({ onAdded }: { onAdded: () => void }) {
   const [username, setUsername] = useState("");
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [loading, setLoading] = useState(false);
-  const { sendFriendRequest } = useAxStore();
+  const { sendFriendRequest, onlineUsersList, friends, me, incoming, outgoing } = useAxStore();
   const { toast } = useToast();
+
+  const busyIds = new Set([
+    ...(me ? [me.id] : []),
+    ...friends.map((f) => f.id),
+    ...incoming.map((r) => r.user.id),
+    ...outgoing.map((r) => r.user.id),
+  ]);
+  const suggestions = onlineUsersList.filter((u) => !busyIds.has(u.id));
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -349,47 +357,96 @@ function AddFriendForm({ onAdded }: { onAdded: () => void }) {
     }
   };
 
+  const quickAdd = (user: AxUser) => {
+    void sendFriendRequest(user.username).then((res) => {
+      if (res.ok) {
+        toast({ description: `Solicitud enviada a @${user.username}` });
+        onAdded();
+      } else {
+        toast({ description: res.error ?? "Error" });
+      }
+    });
+  };
+
   return (
-    <form onSubmit={submit} className="space-y-4 px-1">
-      <div>
-        <label htmlFor="add-friend-input" className="mb-2 block text-sm text-white/60">
-          Añade amigos con su <b className="text-amber-400">nombre de usuario</b>. ¡Ellos
-          tendrán que aceptar tu solicitud!
-        </label>
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-white/30" />
-          <input
-            id="add-friend-input"
-            value={username}
-            onChange={(e) => setUsername(e.target.value.toLowerCase())}
-            placeholder="escribe un usuario…"
-            autoComplete="off"
-            className="w-full rounded-xl border border-white/10 bg-white/5 py-3 pl-11 pr-4 text-sm text-white placeholder:text-white/30 outline-none transition focus:border-amber-400/60 focus:ring-2 focus:ring-amber-400/25"
-          />
+    <div className="space-y-5 px-1">
+      <form onSubmit={submit} className="space-y-4">
+        <div>
+          <label htmlFor="add-friend-input" className="mb-2 block text-sm text-white/60">
+            Añade amigos con su <b className="text-amber-400">nombre de usuario</b>. ¡Ellos
+            tendrán que aceptar tu solicitud!
+          </label>
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-white/30" />
+            <input
+              id="add-friend-input"
+              value={username}
+              onChange={(e) => setUsername(e.target.value.toLowerCase())}
+              placeholder="escribe un usuario…"
+              autoComplete="off"
+              className="w-full rounded-xl border border-white/10 bg-white/5 py-3 pl-11 pr-4 text-sm text-white placeholder:text-white/30 outline-none transition focus:border-amber-400/60 focus:ring-2 focus:ring-amber-400/25"
+            />
+          </div>
         </div>
-      </div>
-      {msg && (
-        <motion.p
-          initial={{ opacity: 0, y: -4 }}
-          animate={{ opacity: 1, y: 0 }}
-          className={`rounded-xl border px-4 py-2.5 text-sm ${
-            msg.ok
-              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
-              : "border-red-500/30 bg-red-500/10 text-red-300"
-          }`}
-          role="status"
+        {msg && (
+          <motion.p
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            className={`rounded-xl border px-4 py-2.5 text-sm ${
+              msg.ok
+                ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                : "border-red-500/30 bg-red-500/10 text-red-300"
+            }`}
+            role="status"
+          >
+            {msg.text}
+          </motion.p>
+        )}
+        <button
+          type="submit"
+          disabled={loading || !username.trim()}
+          className="axc-shine relative w-full overflow-hidden rounded-xl bg-amber-400 px-6 py-3 font-display text-sm font-bold tracking-widest text-black shadow-lg shadow-amber-400/20 transition hover:bg-amber-300 active:scale-[0.98] disabled:opacity-50"
         >
-          {msg.text}
-        </motion.p>
+          {loading ? "ENVIANDO…" : "ENVIAR SOLICITUD"}
+        </button>
+        <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-white/30">
+          <Info className="mt-0.5 h-3 w-3 shrink-0" />
+          El chat funciona directamente entre navegadores (P2P): vuestros dos deben
+          tener la web abierta para encontraros.
+        </p>
+      </form>
+
+      {suggestions.length > 0 && (
+        <section>
+          <h3 className="mb-2 flex items-center gap-2 px-1 text-[11px] font-bold uppercase tracking-widest text-white/40">
+            <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400" />
+            Conectados ahora — {suggestions.length}
+          </h3>
+          <ul className="space-y-1">
+            {suggestions.map((u) => (
+              <li
+                key={u.id}
+                className="flex items-center gap-3 rounded-xl px-3 py-2.5 transition hover:bg-white/[0.04]"
+              >
+                <Avatar displayName={u.displayName} color={u.avatarColor} size={36} online />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-bold text-white">{u.displayName}</p>
+                  <p className="truncate text-xs text-white/40">@{u.username}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => quickAdd(u)}
+                  className="flex items-center gap-1.5 rounded-full bg-amber-400/15 px-3 py-1.5 text-xs font-bold text-amber-300 transition hover:bg-amber-400 hover:text-black active:scale-95"
+                >
+                  <UserPlus className="h-3.5 w-3.5" />
+                  Añadir
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
-      <button
-        type="submit"
-        disabled={loading || !username.trim()}
-        className="axc-shine relative w-full overflow-hidden rounded-xl bg-amber-400 px-6 py-3 font-display text-sm font-bold tracking-widest text-black shadow-lg shadow-amber-400/20 transition hover:bg-amber-300 active:scale-[0.98] disabled:opacity-50"
-      >
-        {loading ? "ENVIANDO…" : "ENVIAR SOLICITUD"}
-      </button>
-    </form>
+    </div>
   );
 }
 
