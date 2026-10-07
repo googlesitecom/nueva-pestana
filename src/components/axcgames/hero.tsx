@@ -4,7 +4,6 @@ import Image from "next/image";
 import { motion } from "framer-motion";
 import { ChevronDown, Flame, Heart, Play, Star, Users } from "lucide-react";
 import type { Game } from "@/lib/games";
-
 type Props = {
   game: Game;
   onPlay: (game: Game) => void;
@@ -43,6 +42,23 @@ export default function Hero({
           {/* Legibility overlays */}
           <div className="absolute inset-0 bg-gradient-to-r from-[#050505] via-[#050505]/75 to-[#050505]/10" />
           <div className="absolute inset-0 bg-gradient-to-t from-[#050505] via-transparent to-[#050505]/40" />
+
+          {/* Marca de agua del logo AXC GAMES (encima de los degradados) */}
+          <div
+            aria-hidden
+            className="pointer-events-none absolute right-[2%] top-1/2 hidden w-[300px] -translate-y-1/2 select-none md:block xl:w-[380px]"
+          >
+            <div className="axc-pulse opacity-80 mix-blend-screen">
+              <Image
+                src="/logo-full.png"
+                alt=""
+                width={380}
+                height={380}
+                sizes="380px"
+                className="h-auto w-full drop-shadow-[0_0_35px_rgba(251,191,36,0.35)]"
+              />
+            </div>
+          </div>
 
           {/* Content */}
           <div className="absolute inset-0 flex flex-col justify-end p-6 sm:p-10 lg:p-14">

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getSessionUser, toPublicUser } from "@/lib/auth";
+import { pingUsers } from "@/lib/realtime-ping";
 
 // POST: aceptar o rechazar una solicitud recibida
 export async function POST(
@@ -32,6 +33,9 @@ export async function POST(
         where: { id },
         data: { status: "accepted" },
       });
+      // Avisar en tiempo real a quien envió la solicitud
+      void pingUsers([friendship.requesterId], "friends:refresh");
+      void pingUsers([friendship.requesterId], "conversations:refresh");
       return NextResponse.json({ ok: true, user: toPublicUser(friendship.requester) });
     }
 

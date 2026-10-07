@@ -12,6 +12,7 @@ import GameView from "@/components/axcgames/game-view";
 import Footer from "@/components/axcgames/footer";
 import AuthScreen from "@/components/axcgames/auth-screen";
 import AnimatedBg from "@/components/axcgames/animated-bg";
+import NotificationWatcher from "@/components/axcgames/notification-watcher";
 import ChatApp from "@/components/axcgames/chat/chat-app";
 import CallLayer from "@/components/axcgames/chat/call-overlay";
 import { useToast } from "@/hooks/use-toast";
@@ -166,6 +167,9 @@ export default function Home() {
     <div className="flex min-h-dvh flex-col bg-[#050505] text-white">
       <AnimatedBg dim={view === "game"} />
 
+      {/* Notificaciones del chat activas en TODAS las vistas (home, juego, chat) */}
+      <NotificationWatcher />
+
       <Header
         query={query}
         onQueryChange={(q) => {
@@ -211,6 +215,24 @@ export default function Home() {
                 document.getElementById("juegos")?.scrollIntoView({ behavior: "smooth" })
               }
             />
+
+            {/* Marquesina de juegos */}
+            <section
+              aria-hidden
+              className="mt-8 overflow-hidden border-y border-white/5 bg-white/[0.02] py-3.5"
+            >
+              <div className="axc-marquee flex w-max items-center gap-12">
+                {[...games, ...games].map((g, i) => (
+                  <span
+                    key={`${g.id}-mq-${i}`}
+                    className="flex items-center gap-12 whitespace-nowrap font-display text-xs font-bold uppercase tracking-[0.35em] text-white/40"
+                  >
+                    {g.title}
+                    <span className="h-1.5 w-1.5 rounded-full bg-amber-400/60" />
+                  </span>
+                ))}
+              </div>
+            </section>
 
             {/* Ventajas */}
             <section

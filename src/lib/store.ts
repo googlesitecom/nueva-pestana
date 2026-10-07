@@ -249,7 +249,13 @@ export const useAxStore = create<AxState>((set, get) => ({
 
     socket.off("connect");
     socket.off("disconnect");
-    socket.on("connect", () => set({ socketConnected: true }));
+    socket.on("connect", () => {
+      set({ socketConnected: true });
+      // Refrescar datos al conectar (y reconectar): mantiene los badges y
+      // notificaciones al día aunque el usuario no abra el chat
+      void get().loadConversations();
+      void get().loadFriends();
+    });
     socket.on("disconnect", () => set({ socketConnected: false }));
 
     if (!socket.data?.axcInit) {

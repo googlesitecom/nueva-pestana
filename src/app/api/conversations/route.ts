@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getSessionUser, toPublicUser } from "@/lib/auth";
+import { pingUsers } from "@/lib/realtime-ping";
 
 // GET: conversaciones del usuario con último mensaje y no leídos
 export async function GET() {
@@ -118,6 +119,7 @@ export async function POST(req: NextRequest) {
           },
         },
       });
+      void pingUsers([other.id], "conversations:refresh");
       return NextResponse.json({ conversationId: conv.id, existing: false }, { status: 201 });
     }
 
@@ -149,6 +151,7 @@ export async function POST(req: NextRequest) {
           },
         },
       });
+      void pingUsers(uniqueIds, "conversations:refresh");
       return NextResponse.json({ conversationId: conv.id, existing: false }, { status: 201 });
     }
 

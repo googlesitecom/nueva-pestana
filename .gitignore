@@ -52,3 +52,11 @@ prompt
 server.log
 # Skills directory
 /skills/
+# ===== interno del entorno de desarrollo =====
+# base de datos local (datos de usuarios de prueba)
+/db/
+
+# artefactos internos de verificación
+/download/
+worklog.md
+agent-ctx/

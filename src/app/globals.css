@@ -345,6 +345,23 @@ html {
   }
 }
 
+/* ===== Marquesina de juegos ===== */
+@keyframes axc-marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+.axc-marquee {
+  animation: axc-marquee 38s linear infinite;
+  will-change: transform;
+}
+.axc-marquee:hover {
+  animation-play-state: paused;
+}
+
 /* Scrollbar fino para paneles de chat */
 .axc-scroll::-webkit-scrollbar {
   width: 6px;
@@ -371,7 +388,8 @@ html {
   .axc-pulse,
   .axc-shine::after,
   .axc-badge-pop,
-  .axc-msg-in {
+  .axc-msg-in,
+  .axc-marquee {
     animation: none !important;
   }
 }

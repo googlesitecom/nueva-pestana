@@ -20,11 +20,10 @@ const orbitron = Orbitron({
 });
 
 export const metadata: Metadata = {
-  title: "axcgames — Juega gratis al instante",
+  title: "nueva-pestaña",
   description:
-    "axcgames: tu portal de juegos gratis estilo premium. Carreras, disparos, acción y supervivencia. Sin descargas, juega al instante en tu navegador.",
+    "Tu página de inicio: juegos, chat y amigos. Velocity GP, Emergency Strike, Apex Kart, Zona Cero y Jeffcraft. Sin descargas, juega al instante en tu navegador.",
   keywords: [
-    "axcgames",
     "juegos",
     "juegos gratis",
     "jugar online",
@@ -32,17 +31,20 @@ export const metadata: Metadata = {
     "Emergency Strike",
     "Apex Kart",
     "Zona Cero",
+    "Jeffcraft",
   ],
-  authors: [{ name: "axcgames" }],
+  authors: [{ name: "nueva-pestaña" }],
   icons: {
-    icon: "/favicon.svg",
+    icon: [{ url: "/icon.png", type: "image/png", sizes: "512x512" }],
+    apple: [{ url: "/apple-icon.png", type: "image/png", sizes: "180x180" }],
   },
   openGraph: {
-    title: "axcgames — Juega gratis al instante",
+    title: "nueva-pestaña",
     description:
-      "Tu portal de juegos premium: Velocity GP, Emergency Strike, Apex Kart y Zona Cero. Juega sin descargas.",
-    siteName: "axcgames",
+      "Tu portal premium: Velocity GP, Emergency Strike, Apex Kart, Zona Cero y Jeffcraft. Juega sin descargas.",
+    siteName: "nueva-pestaña",
     type: "website",
+    images: [{ url: "/logo-full.png", width: 1024, height: 1024 }],
   },
 };
 

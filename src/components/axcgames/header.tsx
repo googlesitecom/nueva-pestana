@@ -2,9 +2,24 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { AnimatePresence, motion } from "framer-motion";
-import { Gamepad2, Heart, LogOut, MessageSquare, Search, User, X } from "lucide-react";
+import {
+  Bell,
+  BellOff,
+  Heart,
+  LogOut,
+  MessageSquare,
+  Search,
+  User,
+  X,
+} from "lucide-react";
 import { useAxStore } from "@/lib/store";
+import {
+  notificationPermission,
+  requestNotificationPermission,
+} from "@/lib/notify";
+import { useToast } from "@/hooks/use-toast";
 import Avatar from "./avatar";
 
 type Props = {
@@ -24,11 +39,38 @@ export default function Header({
 }: Props) {
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [permVersion, setPermVersion] = useState(0);
   const { me, view, openChat, openAuth, logout, conversations, socketConnected } =
     useAxStore();
+  const { toast } = useToast();
 
   const totalUnread = conversations.reduce((acc, c) => acc + c.unreadCount, 0);
   const inChat = view === "chat";
+
+  const perm = (() => {
+    void permVersion; // re-evaluar al cambiar el permiso
+    return notificationPermission();
+  })();
+
+  const handleBell = async () => {
+    const current = notificationPermission();
+    if (current === "unsupported") {
+      toast({ description: "Tu navegador no soporta notificaciones." });
+      return;
+    }
+    if (current === "granted") {
+      toast({ description: "Las notificaciones ya están activadas." });
+      return;
+    }
+    const res = await requestNotificationPermission();
+    setPermVersion((v) => v + 1);
+    toast({
+      description:
+        res === "granted"
+          ? "¡Notificaciones activadas! No te perderás ningún mensaje."
+          : "Notificaciones desactivadas. Actívalas desde el candado del navegador.",
+    });
+  };
 
   const searchInput = (id: string) => (
     <div className="relative w-full">
@@ -66,8 +108,15 @@ export default function Header({
           aria-label="Ir al inicio de axcgames"
           className="group flex shrink-0 items-center gap-2.5"
         >
-          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-amber-300 to-amber-500 text-black shadow-lg shadow-amber-500/20 transition-transform group-hover:scale-105">
-            <Gamepad2 className="h-5 w-5" strokeWidth={2.4} />
+          <span className="relative h-10 w-10 shrink-0 overflow-hidden rounded-xl border border-amber-400/30 shadow-lg shadow-amber-500/20 transition-transform group-hover:scale-105">
+            <Image
+              src="/logo-emblem.png"
+              alt="Logotipo de AXC GAMES"
+              fill
+              sizes="40px"
+              className="object-cover"
+              priority
+            />
           </span>
           <span className="font-display text-lg font-extrabold tracking-wider">
             <span className="text-white">AXC</span>
@@ -106,34 +155,76 @@ export default function Header({
           </button>
         </nav>
 
-        {/* Botón chat */}
-        <motion.button
-          type="button"
-          onClick={inChat ? onGoHome : openChat}
-          whileTap={{ scale: 0.94 }}
-          aria-label={inChat ? "Volver a los juegos" : "Abrir el chat"}
-          className={`relative ml-auto flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-bold transition md:ml-2 ${
-            inChat
-              ? "border-amber-400/60 bg-amber-400/15 text-amber-300"
-              : "border-white/10 bg-white/5 text-white/75 hover:border-amber-400/40 hover:text-amber-300"
-          }`}
-        >
-          <MessageSquare className="h-4 w-4" />
-          <span className="hidden sm:inline">{inChat ? "Juegos" : "Chat"}</span>
-          {!inChat && totalUnread > 0 && (
-            <span className="axc-badge-pop absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-400 px-1.5 text-[11px] font-extrabold text-black shadow-lg">
-              {totalUnread > 99 ? "99+" : totalUnread}
-            </span>
-          )}
-          {inChat && (
-            <span
-              className={`hidden h-1.5 w-1.5 rounded-full sm:block ${
-                socketConnected ? "bg-emerald-400" : "bg-red-400"
+        <div className="ml-auto flex items-center gap-1.5 sm:gap-2 md:ml-2">
+          {/* Botón notificaciones (solo con sesión) */}
+          {me && (
+            <motion.button
+              type="button"
+              onClick={() => void handleBell()}
+              whileTap={{ scale: 0.94 }}
+              aria-label={
+                perm === "granted"
+                  ? "Notificaciones activadas"
+                  : perm === "denied"
+                    ? "Notificaciones bloqueadas"
+                    : "Activar notificaciones"
+              }
+              title={
+                perm === "granted"
+                  ? "Notificaciones activadas"
+                  : perm === "denied"
+                    ? "Notificaciones bloqueadas en el navegador"
+                    : "Activar notificaciones del chat"
+              }
+              className={`relative flex h-10 w-10 shrink-0 items-center justify-center rounded-full border transition active:scale-95 ${
+                perm === "granted"
+                  ? "border-amber-400/50 bg-amber-400/10 text-amber-300"
+                  : perm === "denied"
+                    ? "border-white/10 bg-white/5 text-white/40"
+                    : "border-white/10 bg-white/5 text-white/70 hover:border-amber-400/40 hover:text-amber-300"
               }`}
-              title={socketConnected ? "Conectado" : "Reconectando…"}
-            />
+            >
+              {perm === "denied" ? <BellOff className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
+              {perm === "granted" && (
+                <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border-2 border-[#050505] bg-emerald-400" />
+              )}
+              {!inChat && totalUnread > 0 && perm !== "granted" && (
+                <span className="axc-badge-pop absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-400 px-1.5 text-[11px] font-extrabold text-black shadow-lg">
+                  {totalUnread > 99 ? "99+" : totalUnread}
+                </span>
+              )}
+            </motion.button>
           )}
-        </motion.button>
+
+          {/* Botón chat */}
+          <motion.button
+            type="button"
+            onClick={inChat ? onGoHome : openChat}
+            whileTap={{ scale: 0.94 }}
+            aria-label={inChat ? "Volver a los juegos" : "Abrir el chat"}
+            className={`relative flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-bold transition ${
+              inChat
+                ? "border-amber-400/60 bg-amber-400/15 text-amber-300"
+                : "border-white/10 bg-white/5 text-white/75 hover:border-amber-400/40 hover:text-amber-300"
+            }`}
+          >
+            <MessageSquare className="h-4 w-4" />
+            <span className="hidden sm:inline">{inChat ? "Juegos" : "Chat"}</span>
+            {!inChat && totalUnread > 0 && (
+              <span className="axc-badge-pop absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-400 px-1.5 text-[11px] font-extrabold text-black shadow-lg">
+                {totalUnread > 99 ? "99+" : totalUnread}
+              </span>
+            )}
+            {inChat && (
+              <span
+                className={`hidden h-1.5 w-1.5 rounded-full sm:block ${
+                  socketConnected ? "bg-emerald-400" : "bg-red-400"
+                }`}
+                title={socketConnected ? "Conectado" : "Reconectando…"}
+              />
+            )}
+          </motion.button>
+        </div>
 
         {/* Menú usuario */}
         {me ? (

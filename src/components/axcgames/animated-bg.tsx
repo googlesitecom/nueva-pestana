@@ -1,12 +1,128 @@
 "use client";
 
+import { useEffect, useRef } from "react";
+
 /**
- * Fondo animado premium: aurora + grid + ruido + viñeta.
- * Solo CSS (transform/opacity) para rendimiento. Respeta prefers-reduced-motion.
+ * Campo de partículas conectadas (canvas) — patrón animado premium.
+ * Se pausa cuando la pestaña está oculta y respeta prefers-reduced-motion.
+ */
+function Particles() {
+  const ref = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    type P = { x: number; y: number; vx: number; vy: number; r: number; gold: boolean };
+    let parts: P[] = [];
+    let w = 0;
+    let h = 0;
+    let raf = 0;
+    let running = true;
+
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+
+    const resize = () => {
+      w = canvas.clientWidth;
+      h = canvas.clientHeight;
+      canvas.width = Math.floor(w * dpr);
+      canvas.height = Math.floor(h * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const count = Math.min(85, Math.max(28, Math.floor((w * h) / 26000)));
+      parts = Array.from({ length: count }, () => ({
+        x: Math.random() * w,
+        y: Math.random() * h,
+        vx: (Math.random() - 0.5) * 0.22,
+        vy: (Math.random() - 0.5) * 0.22,
+        r: Math.random() * 1.5 + 0.5,
+        gold: Math.random() < 0.55,
+      }));
+    };
+
+    const step = () => {
+      if (!running) return;
+      ctx.clearRect(0, 0, w, h);
+
+      for (const p of parts) {
+        p.x += p.vx;
+        p.y += p.vy;
+        if (p.x < -24) p.x = w + 24;
+        if (p.x > w + 24) p.x = -24;
+        if (p.y < -24) p.y = h + 24;
+        if (p.y > h + 24) p.y = -24;
+      }
+
+      const maxDist = 110;
+      for (let i = 0; i < parts.length; i++) {
+        const a = parts[i];
+        for (let j = i + 1; j < parts.length; j++) {
+          const b = parts[j];
+          const dx = a.x - b.x;
+          const dy = a.y - b.y;
+          const d2 = dx * dx + dy * dy;
+          if (d2 < maxDist * maxDist) {
+            const alpha = (1 - Math.sqrt(d2) / maxDist) * 0.13;
+            ctx.strokeStyle = `rgba(251, 191, 36, ${alpha})`;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(a.x, a.y);
+            ctx.lineTo(b.x, b.y);
+            ctx.stroke();
+          }
+        }
+      }
+
+      for (const p of parts) {
+        ctx.fillStyle = p.gold
+          ? "rgba(251, 191, 36, 0.5)"
+          : "rgba(255, 255, 255, 0.32)";
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      raf = requestAnimationFrame(step);
+    };
+
+    const onVisibility = () => {
+      if (document.hidden) {
+        running = false;
+        cancelAnimationFrame(raf);
+      } else if (!running) {
+        running = true;
+        raf = requestAnimationFrame(step);
+      }
+    };
+
+    resize();
+    window.addEventListener("resize", resize);
+    document.addEventListener("visibilitychange", onVisibility);
+    raf = requestAnimationFrame(step);
+
+    return () => {
+      running = false;
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", resize);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
+
+  return <canvas ref={ref} className="absolute inset-0 h-full w-full opacity-60" />;
+}
+
+/**
+ * Fondo animado premium: partículas + aurora + grid + ruido + viñeta.
+ * Solo transform/opacity/canvas para rendimiento. Respeta prefers-reduced-motion.
  */
 export default function AnimatedBg({ dim = false }: { dim?: boolean }) {
   return (
     <div aria-hidden className="fixed inset-0 -z-10 overflow-hidden bg-[#050505]">
+      {/* Partículas conectadas */}
+      <Particles />
+
       {/* Blobs de aurora */}
       <div
         className="axc-aurora axc-aurora-a absolute -top-[20%] left-[-10%] h-[55vmax] w-[55vmax] rounded-full opacity-70 blur-[110px]"

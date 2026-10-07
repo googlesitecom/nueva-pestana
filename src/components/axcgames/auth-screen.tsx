@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import Image from "next/image";
 import { motion } from "framer-motion";
-import { ArrowLeft, Gamepad2, KeyRound, Loader2, LogIn, UserPlus } from "lucide-react";
+import { ArrowLeft, KeyRound, Loader2, LogIn, UserPlus } from "lucide-react";
 import { useAxStore } from "@/lib/store";
 
 export default function AuthScreen() {
@@ -44,8 +45,15 @@ export default function AuthScreen() {
         <div className="overflow-hidden rounded-3xl border border-white/10 bg-zinc-950/70 shadow-2xl shadow-black backdrop-blur-xl">
           {/* Cabecera */}
           <div className="relative border-b border-white/10 px-8 pb-6 pt-8 text-center">
-            <span className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-amber-300 to-amber-500 text-black shadow-xl shadow-amber-500/25">
-              <Gamepad2 className="h-7 w-7" strokeWidth={2.4} />
+            <span className="relative mx-auto mb-4 block h-16 w-16 overflow-hidden rounded-2xl border border-amber-400/30 shadow-xl shadow-amber-500/25">
+              <Image
+                src="/logo-emblem.png"
+                alt="Logotipo de AXC GAMES"
+                fill
+                sizes="64px"
+                className="object-cover"
+                priority
+              />
             </span>
             <h1 className="font-display text-2xl font-black tracking-wider text-white">
               <span>AXC</span>

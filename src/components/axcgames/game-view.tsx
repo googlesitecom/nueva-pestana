@@ -182,8 +182,14 @@ export default function GameView({
                 className="object-cover opacity-15 blur-md"
               />
               <div className="relative flex flex-col items-center gap-4">
-                <span className="flex h-16 w-16 items-center justify-center rounded-2xl bg-amber-400 text-black shadow-xl">
-                  <Gamepad2 className="h-8 w-8" />
+                <span className="relative h-16 w-16 overflow-hidden rounded-2xl border border-amber-400/40 shadow-xl shadow-amber-500/25">
+                  <Image
+                    src="/logo-emblem.png"
+                    alt="Logotipo de AXC GAMES"
+                    fill
+                    sizes="64px"
+                    className="object-cover"
+                  />
                 </span>
                 <div className="h-1 w-44 overflow-hidden rounded-full bg-white/10">
                   <div className="axc-loading-bar h-full w-1/3 rounded-full bg-amber-400" />

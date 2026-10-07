@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getSessionUser, toPublicUser } from "@/lib/auth";
+import { pingUsers } from "@/lib/realtime-ping";
 
 // GET: lista de amigos + solicitudes
 export async function GET() {
@@ -90,6 +91,9 @@ export async function POST(req: NextRequest) {
         where: { id: existing.id },
         data: { status: "accepted" },
       });
+      // Avisar en tiempo real al otro usuario (nuevo amigo + chats)
+      void pingUsers([target.id], "friends:refresh");
+      void pingUsers([target.id], "conversations:refresh");
       return NextResponse.json({
         accepted: true,
         friendshipId: updated.id,
@@ -100,6 +104,9 @@ export async function POST(req: NextRequest) {
     const friendship = await db.friendship.create({
       data: { requesterId: me.id, addresseeId: target.id, status: "pending" },
     });
+
+    // Notificación en tiempo real al destinatario de la solicitud
+    void pingUsers([target.id], "friends:refresh");
 
     return NextResponse.json(
       { accepted: false, friendshipId: friendship.id, user: toPublicUser(target) },

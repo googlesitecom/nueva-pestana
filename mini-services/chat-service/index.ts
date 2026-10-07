@@ -26,6 +26,56 @@ const io = new Server(httpServer, {
   pingInterval: 25000,
 });
 
+/**
+ * Mini HTTP interno (127.0.0.1:3004) para que las rutas API de Next
+ * disparen refrescos en tiempo real (p. ej. solicitud de amistad) sin depender
+ * del navegador del remitente. Solo localhost + token compartido.
+ */
+const INTERNAL_SECRET = "axc-internal-9f3d1b7c2e";
+const INTERNAL_EVENTS = new Set(["friends:refresh", "conversations:refresh"]);
+
+const internalServer = createServer((req, res) => {
+  const send = (code: number, body: Record<string, unknown>) => {
+    res.writeHead(code, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(body));
+  };
+  if (req.method !== "POST" || req.url !== "/internal/notify") {
+    return send(404, { error: "not found" });
+  }
+  if (req.headers["x-axc-internal"] !== INTERNAL_SECRET) {
+    return send(403, { error: "forbidden" });
+  }
+  let body = "";
+  req.on("data", (c: string) => {
+    body += c;
+    if (body.length > 10_000) req.destroy();
+  });
+  req.on("end", () => {
+    try {
+      const data = JSON.parse(body) as { userIds?: unknown; event?: unknown };
+      const event = String(data?.event ?? "");
+      const userIds = Array.isArray(data?.userIds)
+        ? (data.userIds as unknown[]).filter((x): x is string => typeof x === "string" && !!x)
+        : [];
+      if (!INTERNAL_EVENTS.has(event) || userIds.length === 0) {
+        return send(400, { error: "invalid payload" });
+      }
+      for (const id of userIds) {
+        io.to(userRoom(id)).emit(event, {});
+      }
+      send(200, { ok: true, notified: userIds.length });
+    } catch {
+      send(400, { error: "invalid json" });
+    }
+  });
+  req.on("error", () => send(500, { error: "request error" }));
+});
+
+const INTERNAL_PORT = 3004;
+internalServer.listen(INTERNAL_PORT, "127.0.0.1", () => {
+  console.log(`axcgames internal notify endpoint on 127.0.0.1:${INTERNAL_PORT}`);
+});
+
 /** userId -> Set<socketId> conectados */
 const online = new Map<string, Set<string>>();
 
