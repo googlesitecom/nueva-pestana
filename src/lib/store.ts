@@ -20,7 +20,7 @@ import {
   loginAccount,
   registerAccount,
   setSession,
-} from "./local-auth";
+} from "./accounts";
 import {
   LOBBY_ROOM,
   p2p,
