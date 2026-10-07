@@ -203,3 +203,175 @@ html {
 .axc-loading-bar {
   animation: axc-loading 1.15s ease-in-out infinite;
 }
+
+/* ===== Fondo animado (aurora + grid + ruido) ===== */
+@keyframes axc-drift-a {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(8vw, 6vh, 0) scale(1.12);
+  }
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+@keyframes axc-drift-b {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1.05);
+  }
+  50% {
+    transform: translate3d(-7vw, -5vh, 0) scale(0.95);
+  }
+  100% {
+    transform: translate3d(0, 0, 0) scale(1.05);
+  }
+}
+@keyframes axc-drift-c {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(0deg) scale(1);
+  }
+  50% {
+    transform: translate3d(5vw, -6vh, 0) rotate(12deg) scale(1.1);
+  }
+  100% {
+    transform: translate3d(0, 0, 0) rotate(0deg) scale(1);
+  }
+}
+.axc-aurora-a {
+  animation: axc-drift-a 26s ease-in-out infinite;
+  will-change: transform;
+}
+.axc-aurora-b {
+  animation: axc-drift-b 32s ease-in-out infinite;
+  will-change: transform;
+}
+.axc-aurora-c {
+  animation: axc-drift-c 38s ease-in-out infinite;
+  will-change: transform;
+}
+
+.axc-grid {
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.045) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.045) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(ellipse 90% 70% at 50% 20%, black 30%, transparent 75%);
+  -webkit-mask-image: radial-gradient(ellipse 90% 70% at 50% 20%, black 30%, transparent 75%);
+  animation: axc-grid-pan 60s linear infinite;
+}
+@keyframes axc-grid-pan {
+  0% {
+    background-position: 0 0;
+  }
+  100% {
+    background-position: 44px 44px;
+  }
+}
+
+/* ===== Animaciones de chat ===== */
+@keyframes axc-msg-in {
+  0% {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.axc-msg-in {
+  animation: axc-msg-in 0.22s cubic-bezier(0.21, 1.02, 0.73, 1) both;
+}
+
+@keyframes axc-typing-dot {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+.axc-typing-dot {
+  animation: axc-typing-dot 1.2s ease-in-out infinite;
+}
+.axc-typing-dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.axc-typing-dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes axc-ring-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.5);
+  }
+  70% {
+    box-shadow: 0 0 0 22px rgba(251, 191, 36, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(251, 191, 36, 0);
+  }
+}
+.axc-ring-pulse {
+  animation: axc-ring-pulse 1.6s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes axc-badge-pop {
+  0% {
+    transform: scale(0);
+  }
+  60% {
+    transform: scale(1.25);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+.axc-badge-pop {
+  animation: axc-badge-pop 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+@keyframes axc-sheen-move {
+  0% {
+    transform: translateX(-120%) skewX(-18deg);
+  }
+  100% {
+    transform: translateX(240%) skewX(-18deg);
+  }
+}
+
+/* Scrollbar fino para paneles de chat */
+.axc-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.axc-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.axc-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  border: none;
+}
+.axc-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+/* Accesibilidad: reducir movimiento */
+@media (prefers-reduced-motion: reduce) {
+  .axc-aurora-a,
+  .axc-aurora-b,
+  .axc-aurora-c,
+  .axc-grid,
+  .axc-pulse,
+  .axc-shine::after,
+  .axc-badge-pop,
+  .axc-msg-in {
+    animation: none !important;
+  }
+}

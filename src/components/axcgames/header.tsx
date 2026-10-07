@@ -1,7 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { Gamepad2, Heart, Search, X } from "lucide-react";
+import Link from "next/link";
+import { AnimatePresence, motion } from "framer-motion";
+import { Gamepad2, Heart, LogOut, MessageSquare, Search, User, X } from "lucide-react";
+import { useAxStore } from "@/lib/store";
+import Avatar from "./avatar";
 
 type Props = {
   query: string;
@@ -19,6 +23,12 @@ export default function Header({
   favoritesCount,
 }: Props) {
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const { me, view, openChat, openAuth, logout, conversations, socketConnected } =
+    useAxStore();
+
+  const totalUnread = conversations.reduce((acc, c) => acc + c.unreadCount, 0);
+  const inChat = view === "chat";
 
   const searchInput = (id: string) => (
     <div className="relative w-full">
@@ -48,7 +58,7 @@ export default function Header({
 
   return (
     <header className="sticky top-0 z-50 border-b border-white/10 bg-[#050505]/85 backdrop-blur-xl">
-      <div className="mx-auto flex h-16 max-w-7xl items-center gap-3 px-4 sm:px-6 lg:px-8">
+      <div className="mx-auto flex h-16 max-w-7xl items-center gap-2 px-4 sm:gap-3 sm:px-6 lg:px-8">
         {/* Logo */}
         <button
           type="button"
@@ -65,24 +75,19 @@ export default function Header({
           </span>
         </button>
 
-        {/* Desktop search */}
-        <div className="mx-2 hidden min-w-0 flex-1 md:block md:mx-6">
+        {/* Buscador escritorio */}
+        <div className={`mx-2 hidden min-w-0 flex-1 md:block md:mx-6 ${inChat ? "opacity-40 pointer-events-none" : ""}`}>
           {searchInput("search-desktop")}
         </div>
 
-        {/* Desktop nav */}
+        {/* Nav escritorio */}
         <nav className="hidden items-center gap-1 md:flex" aria-label="Navegación principal">
           <button
             type="button"
-            onClick={() => onNavigate("inicio")}
-            className="rounded-full px-4 py-2 text-sm font-medium text-white/70 transition hover:bg-white/5 hover:text-white"
-          >
-            Inicio
-          </button>
-          <button
-            type="button"
-            onClick={() => onNavigate("juegos")}
-            className="rounded-full px-4 py-2 text-sm font-medium text-white/70 transition hover:bg-white/5 hover:text-white"
+            onClick={onGoHome}
+            className={`rounded-full px-4 py-2 text-sm font-medium transition hover:bg-white/5 ${
+              view === "home" ? "text-white" : "text-white/70 hover:text-white"
+            }`}
           >
             Juegos
           </button>
@@ -94,26 +99,135 @@ export default function Header({
             <Heart className="h-4 w-4" />
             Favoritos
             {favoritesCount > 0 && (
-              <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-400 px-1.5 text-[11px] font-extrabold text-black">
+              <span className="axc-badge-pop flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-400 px-1.5 text-[11px] font-extrabold text-black">
                 {favoritesCount}
               </span>
             )}
           </button>
         </nav>
 
-        {/* Mobile search toggle */}
+        {/* Botón chat */}
+        <motion.button
+          type="button"
+          onClick={inChat ? onGoHome : openChat}
+          whileTap={{ scale: 0.94 }}
+          aria-label={inChat ? "Volver a los juegos" : "Abrir el chat"}
+          className={`relative ml-auto flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-bold transition md:ml-2 ${
+            inChat
+              ? "border-amber-400/60 bg-amber-400/15 text-amber-300"
+              : "border-white/10 bg-white/5 text-white/75 hover:border-amber-400/40 hover:text-amber-300"
+          }`}
+        >
+          <MessageSquare className="h-4 w-4" />
+          <span className="hidden sm:inline">{inChat ? "Juegos" : "Chat"}</span>
+          {!inChat && totalUnread > 0 && (
+            <span className="axc-badge-pop absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-400 px-1.5 text-[11px] font-extrabold text-black shadow-lg">
+              {totalUnread > 99 ? "99+" : totalUnread}
+            </span>
+          )}
+          {inChat && (
+            <span
+              className={`hidden h-1.5 w-1.5 rounded-full sm:block ${
+                socketConnected ? "bg-emerald-400" : "bg-red-400"
+              }`}
+              title={socketConnected ? "Conectado" : "Reconectando…"}
+            />
+          )}
+        </motion.button>
+
+        {/* Menú usuario */}
+        {me ? (
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setUserMenuOpen((v) => !v)}
+              aria-haspopup="menu"
+              aria-expanded={userMenuOpen}
+              aria-label="Menú de usuario"
+              className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 py-1.5 pl-1.5 pr-3 transition hover:border-amber-400/40"
+            >
+              <Avatar displayName={me.displayName} color={me.avatarColor} size={28} online={socketConnected} />
+              <span className="hidden max-w-28 truncate text-sm font-semibold text-white/85 sm:block">
+                {me.displayName}
+              </span>
+            </button>
+            <AnimatePresence>
+              {userMenuOpen && (
+                <>
+                  <div
+                    className="fixed inset-0 z-40"
+                    onClick={() => setUserMenuOpen(false)}
+                  />
+                  <motion.div
+                    initial={{ opacity: 0, y: -6, scale: 0.97 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: -6, scale: 0.97 }}
+                    transition={{ duration: 0.15 }}
+                    role="menu"
+                    className="absolute right-0 z-50 mt-2 w-56 overflow-hidden rounded-2xl border border-white/10 bg-zinc-950/95 shadow-2xl shadow-black backdrop-blur-xl"
+                  >
+                    <div className="border-b border-white/10 px-4 py-3.5">
+                      <p className="truncate text-sm font-bold text-white">{me.displayName}</p>
+                      <p className="truncate text-xs text-white/40">@{me.username}</p>
+                    </div>
+                    <div className="p-1.5">
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setUserMenuOpen(false);
+                          openChat();
+                        }}
+                        className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-sm font-medium text-white/75 transition hover:bg-white/5 hover:text-white"
+                      >
+                        <MessageSquare className="h-4 w-4" />
+                        Chat y amigos
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setUserMenuOpen(false);
+                          void logout();
+                        }}
+                        className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-sm font-medium text-red-300/90 transition hover:bg-red-500/10 hover:text-red-300"
+                      >
+                        <LogOut className="h-4 w-4" />
+                        Cerrar sesión
+                      </button>
+                    </div>
+                  </motion.div>
+                </>
+              )}
+            </AnimatePresence>
+          </div>
+        ) : (
+          <Link
+            href="#"
+            onClick={(e) => {
+              e.preventDefault();
+              openAuth();
+            }}
+            className="flex items-center gap-1.5 rounded-full bg-amber-400 px-4 py-2 text-sm font-bold text-black shadow-lg shadow-amber-400/20 transition hover:bg-amber-300 active:scale-95"
+          >
+            <User className="h-4 w-4" />
+            <span className="hidden sm:inline">Entrar</span>
+          </Link>
+        )}
+
+        {/* Buscador móvil */}
         <button
           type="button"
           onClick={() => setMobileSearchOpen((v) => !v)}
           aria-label={mobileSearchOpen ? "Cerrar búsqueda" : "Abrir búsqueda"}
           aria-expanded={mobileSearchOpen}
-          className="ml-auto flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/75 transition hover:bg-white/10 hover:text-white active:scale-95 md:hidden"
+          className="flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/75 transition hover:bg-white/10 hover:text-white active:scale-95 md:hidden"
         >
           {mobileSearchOpen ? <X className="h-4.5 w-4.5" /> : <Search className="h-4.5 w-4.5" />}
         </button>
       </div>
 
-      {/* Mobile search row */}
+      {/* Búsqueda móvil */}
       {mobileSearchOpen && (
         <div className="border-t border-white/10 px-4 py-3 md:hidden">
           {searchInput("search-mobile")}

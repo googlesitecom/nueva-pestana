@@ -4,48 +4,64 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Gamepad2, SearchX, ShieldCheck, Trophy, Zap } from "lucide-react";
 import { allCategories, featuredGame, games, type Game } from "@/lib/games";
+import { useAxStore } from "@/lib/store";
 import Header from "@/components/axcgames/header";
 import Hero from "@/components/axcgames/hero";
 import GameCard from "@/components/axcgames/game-card";
 import GameView from "@/components/axcgames/game-view";
 import Footer from "@/components/axcgames/footer";
+import AuthScreen from "@/components/axcgames/auth-screen";
+import AnimatedBg from "@/components/axcgames/animated-bg";
+import ChatApp from "@/components/axcgames/chat/chat-app";
+import CallLayer from "@/components/axcgames/chat/call-overlay";
 import { useToast } from "@/hooks/use-toast";
 
 const FAV_KEY = "axcgames:favorites";
 const RECENT_KEY = "axcgames:recent";
 
 const FEATURE_STRIP = [
-  {
-    icon: Zap,
-    title: "Al instante",
-    sub: "Sin descargas ni instalaciones",
-  },
-  {
-    icon: ShieldCheck,
-    title: "100% gratis",
-    sub: "Sin registros ni pagos",
-  },
-  {
-    icon: Gamepad2,
-    title: "Catálogo curado",
-    sub: "Lo mejor de cada género",
-  },
-  {
-    icon: Trophy,
-    title: "Supera tu récord",
-    sub: "Compite contra ti mismo",
-  },
+  { icon: Zap, title: "Al instante", sub: "Sin descargas ni instalaciones" },
+  { icon: ShieldCheck, title: "100% gratis", sub: "Sin registros ni pagos" },
+  { icon: Gamepad2, title: "Chat en vivo", sub: "Amigos, grupos y llamadas" },
+  { icon: Trophy, title: "Supera tu récord", sub: "Compite contra ti mismo" },
 ];
 
 export default function Home() {
-  const [activeGame, setActiveGame] = useState<Game | null>(null);
+  // Vista global (store) + estado local de juegos
+  const view = useAxStore((s) => s.view);
+  const activeGame = useAxStore((s) => s.activeGame);
+  const openGame = useAxStore((s) => s.openGame);
+  const goHome = useAxStore((s) => s.goHome);
+  const openChat = useAxStore((s) => s.openChat);
+  const fetchMe = useAxStore((s) => s.fetchMe);
+  const connect = useAxStore((s) => s.connect);
+  const me = useAxStore((s) => s.me);
+  const meLoaded = useAxStore((s) => s.meLoaded);
+
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("Todos");
   const [favorites, setFavorites] = useState<string[]>([]);
   const [recent, setRecent] = useState<string[]>([]);
   const { toast } = useToast();
 
-  // Cargar favoritos y recientes desde localStorage (tras el montaje, para evitar mismatch de hidratación)
+  // Cargar sesión al arrancar
+  useEffect(() => {
+    void fetchMe();
+  }, [fetchMe]);
+
+  // Conectar socket cuando hay usuario
+  useEffect(() => {
+    if (me) connect();
+  }, [me, connect]);
+
+  // Tras login/registro desde la vista auth, ir al chat
+  useEffect(() => {
+    if (me && view === "auth") {
+      openChat();
+    }
+  }, [me, view, openChat]);
+
+  // Cargar favoritos y recientes desde localStorage (tras el montaje)
   useEffect(() => {
     try {
       const f = JSON.parse(localStorage.getItem(FAV_KEY) ?? "[]");
@@ -80,55 +96,41 @@ export default function Home() {
     [toast]
   );
 
-  const openGame = useCallback((game: Game) => {
-    setActiveGame(game);
-    window.scrollTo({ top: 0, behavior: "auto" });
-    setRecent((prev) => {
-      const next = [game.id, ...prev.filter((r) => r !== game.id)].slice(0, 4);
-      try {
-        localStorage.setItem(RECENT_KEY, JSON.stringify(next));
-      } catch {
-        /* ignorar */
-      }
-      return next;
-    });
-  }, []);
-
-  const goHome = useCallback(() => {
-    setActiveGame(null);
-    window.scrollTo({ top: 0, behavior: "auto" });
-  }, []);
+  const handleOpenGame = useCallback(
+    (game: Game) => {
+      openGame(game);
+      setRecent((prev) => {
+        const next = [game.id, ...prev.filter((r) => r !== game.id)].slice(0, 4);
+        try {
+          localStorage.setItem(RECENT_KEY, JSON.stringify(next));
+        } catch {
+          /* ignorar */
+        }
+        return next;
+      });
+    },
+    [openGame]
+  );
 
   // ESC cierra el juego (cuando no está en pantalla completa)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && activeGame && !document.fullscreenElement) goHome();
+      if (e.key === "Escape" && view === "game" && !document.fullscreenElement) goHome();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [activeGame, goHome]);
+  }, [view, goHome]);
 
-  // Buscar mientras juegas te devuelve al catálogo
-  const handleQueryChange = useCallback(
-    (q: string) => {
-      setQuery(q);
-      if (activeGame) {
-        setActiveGame(null);
-        window.scrollTo({ top: 0, behavior: "auto" });
-      }
+  const navigate = useCallback(
+    (sectionId: string) => {
+      goHome();
+      window.setTimeout(() => {
+        const el = document.getElementById(sectionId);
+        el?.scrollIntoView({ behavior: "smooth" });
+      }, 240);
     },
-    [activeGame]
+    [goHome]
   );
-
-  const navigate = useCallback((sectionId: string) => {
-    setActiveGame(null);
-    window.scrollTo({ top: 0, behavior: "auto" });
-    window.setTimeout(() => {
-      const el =
-        document.getElementById(sectionId) ?? document.getElementById("juegos");
-      el?.scrollIntoView({ behavior: "smooth" });
-    }, 240);
-  }, []);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -162,22 +164,25 @@ export default function Home() {
 
   return (
     <div className="flex min-h-dvh flex-col bg-[#050505] text-white">
-      {/* Resplandor ambiental superior */}
-      <div
-        aria-hidden
-        className="pointer-events-none fixed inset-x-0 top-0 z-0 h-[480px] bg-[radial-gradient(ellipse_60%_50%_at_50%_-10%,rgba(251,191,36,0.09),transparent_70%)]"
-      />
+      <AnimatedBg dim={view === "game"} />
 
       <Header
         query={query}
-        onQueryChange={handleQueryChange}
+        onQueryChange={(q) => {
+          setQuery(q);
+          if (view === "game") goHome();
+        }}
         onGoHome={goHome}
         onNavigate={navigate}
         favoritesCount={favorites.length}
       />
 
       <AnimatePresence mode="wait">
-        {activeGame ? (
+        {view === "auth" ? (
+          <AuthScreen key="auth" />
+        ) : view === "chat" ? (
+          <ChatApp key="chat" />
+        ) : view === "game" && activeGame ? (
           <GameView
             key={activeGame.id}
             game={activeGame}
@@ -185,7 +190,7 @@ export default function Home() {
             favorites={favorites}
             onToggleFavorite={toggleFavorite}
             onClose={goHome}
-            onPlay={openGame}
+            onPlay={handleOpenGame}
           />
         ) : (
           <motion.main
@@ -199,7 +204,7 @@ export default function Home() {
             {/* Juego destacado */}
             <Hero
               game={featuredGame}
-              onPlay={openGame}
+              onPlay={handleOpenGame}
               isFavorite={favorites.includes(featuredGame.id)}
               onToggleFavorite={toggleFavorite}
               onExplore={() =>
@@ -214,9 +219,10 @@ export default function Home() {
             >
               <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
                 {FEATURE_STRIP.map(({ icon: Icon, title, sub }) => (
-                  <div
+                  <motion.div
                     key={title}
-                    className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.03] p-4 transition hover:border-white/20 hover:bg-white/[0.05]"
+                    whileHover={{ y: -3 }}
+                    className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.04] p-4 backdrop-blur-sm transition-colors hover:border-white/20 hover:bg-white/[0.06]"
                   >
                     <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-400/10 text-amber-400">
                       <Icon className="h-5 w-5" />
@@ -225,7 +231,7 @@ export default function Home() {
                       <p className="truncate text-sm font-bold text-white">{title}</p>
                       <p className="truncate text-xs text-white/45">{sub}</p>
                     </div>
-                  </div>
+                  </motion.div>
                 ))}
               </div>
             </section>
@@ -236,10 +242,7 @@ export default function Home() {
                 aria-labelledby="recent-heading"
                 className="mx-auto w-full max-w-7xl px-4 pt-10 sm:px-6 lg:px-8"
               >
-                <h2
-                  id="recent-heading"
-                  className="font-display text-lg font-bold tracking-wide"
-                >
+                <h2 id="recent-heading" className="font-display text-lg font-bold tracking-wide">
                   CONTINÚA JUGANDO
                 </h2>
                 <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -248,7 +251,7 @@ export default function Home() {
                       key={g.id}
                       game={g}
                       index={i}
-                      onPlay={openGame}
+                      onPlay={handleOpenGame}
                       isFavorite={favorites.includes(g.id)}
                       onToggleFavorite={toggleFavorite}
                     />
@@ -264,10 +267,7 @@ export default function Home() {
                 aria-labelledby="favorites-heading"
                 className="mx-auto w-full max-w-7xl scroll-mt-24 px-4 pt-10 sm:px-6 lg:px-8"
               >
-                <h2
-                  id="favorites-heading"
-                  className="font-display text-lg font-bold tracking-wide"
-                >
+                <h2 id="favorites-heading" className="font-display text-lg font-bold tracking-wide">
                   TUS FAVORITOS
                 </h2>
                 <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -276,7 +276,7 @@ export default function Home() {
                       key={g.id}
                       game={g}
                       index={i}
-                      onPlay={openGame}
+                      onPlay={handleOpenGame}
                       isFavorite={favorites.includes(g.id)}
                       onToggleFavorite={toggleFavorite}
                     />
@@ -293,10 +293,7 @@ export default function Home() {
             >
               <div className="flex flex-wrap items-end justify-between gap-3">
                 <div>
-                  <h2
-                    id="games-heading"
-                    className="font-display text-xl font-bold tracking-wide sm:text-2xl"
-                  >
+                  <h2 id="games-heading" className="font-display text-xl font-bold tracking-wide sm:text-2xl">
                     TODOS LOS JUEGOS
                   </h2>
                   <p className="mt-1 text-sm text-white/45">
@@ -305,6 +302,15 @@ export default function Home() {
                     {query.trim() ? ` para «${query.trim()}»` : ""}
                   </p>
                 </div>
+                {!me && meLoaded && (
+                  <button
+                    type="button"
+                    onClick={() => useAxStore.getState().openAuth()}
+                    className="rounded-full border border-amber-400/40 bg-amber-400/10 px-4 py-2 text-xs font-bold text-amber-300 transition hover:bg-amber-400/20"
+                  >
+                    Crea tu cuenta y chatea con amigos
+                  </button>
+                )}
               </div>
 
               {/* Categorías */}
@@ -334,7 +340,7 @@ export default function Home() {
                       key={g.id}
                       game={g}
                       index={i}
-                      onPlay={openGame}
+                      onPlay={handleOpenGame}
                       isFavorite={favorites.includes(g.id)}
                       onToggleFavorite={toggleFavorite}
                       priority={i < 2}
@@ -371,6 +377,9 @@ export default function Home() {
           </motion.main>
         )}
       </AnimatePresence>
+
+      {/* Llamadas activas (sobre cualquier vista) */}
+      {me && <CallLayer />}
     </div>
   );
 }
