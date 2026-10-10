@@ -100,6 +100,23 @@ export const games: Game[] = [
     difficulty: "Fácil",
     accent: "#10b981",
   },
+  {
+    id: "grand-theft-voxel",
+    title: "Grand Theft Voxel",
+    tagline: "El crimen en un mundo de bloques",
+    description:
+      "Roba coches, escapa de la policía y causa el caos en una ciudad voxel que puedes explorar y destruir entera.",
+    longDescription:
+      "Grand Theft Voxel mezcla la libertad del crimen a mundo abierto con un universo completamente construido en bloques. Roba cualquier coche que encuentres en la calle, siembra el pánico mientras las estrellas de búsqueda se acumulan y la policía te persigue por toda la ciudad. Salta entre edificios cuadrados, descubre atajos por los callejones y usa el entorno destructible a tu favor: si un bloque estorba, simplemente rompe y abre tu propio camino. Explora libremente la ciudad, cumple misiones y conviértete en el criminal más buscado del mundo voxel.",
+    cover: "/games/grand-theft-voxel.png",
+    url: "https://googlesitecom.github.io/GTV/",
+    categories: ["Acción", "Sandbox"],
+    tags: ["Mundo abierto", "Voxel", "Coches", "Policía"],
+    rating: 4.9,
+    players: "418K",
+    difficulty: "Media",
+    accent: "#ec4899",
+  },
 ];
 
 export const allCategories = [
