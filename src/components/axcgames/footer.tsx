@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import { asset } from "@/lib/paths";
 import { Heart } from "lucide-react";
 
 type Props = {
@@ -18,7 +19,7 @@ export default function Footer({ onNavigate }: Props) {
             <div className="flex items-center gap-3">
               <span className="relative h-11 w-11 shrink-0 overflow-hidden rounded-xl border border-amber-400/30 shadow-lg shadow-amber-500/20">
                 <Image
-                  src="/logo-emblem.png"
+                  src={asset("/logo-emblem.png")}
                   alt="Logotipo de AXC GAMES"
                   fill
                   sizes="44px"

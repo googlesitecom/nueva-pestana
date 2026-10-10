@@ -23,6 +23,7 @@ import {
 } from "./accounts";
 import {
   LOBBY_ROOM,
+  PEER_DISCOVERY_TIMEOUT_MS,
   p2p,
   subscribeP2P,
   type P2pEvent,
@@ -624,28 +625,42 @@ export const useAxStore = create<AxState>((set, get) => ({
     const s = get();
     if (!s.me) return { ok: false, error: "Inicia sesión primero." };
     const clean = username.trim().toLowerCase();
-    const user = p2p.onlineUsers().find((u) => u.username === clean);
+
+    // El descubrimiento P2P (relés + WebRTC) puede tardar varios segundos
+    // aunque ambos estén conectados: esperamos un rato antes de declarar
+    // que el usuario está desconectado, en lugar de fallar al instante.
+    const findOnline = () => p2p.onlineUsers().find((u) => u.username === clean);
+    let user = findOnline();
+    const deadline = Date.now() + PEER_DISCOVERY_TIMEOUT_MS;
+    while (!user && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 1500));
+      if (get().me?.id !== s.me?.id) return { ok: false, error: "Sesión cerrada." };
+      user = findOnline();
+    }
     if (!user) {
       return {
         ok: false,
-        error: `@${clean} no está conectado ahora mismo. El chat es directo entre navegadores: pedidle estar en línea a la vez.`,
+        error: `No se encontró a @${clean} con la web abierta. Comprueba que está conectado y vuelve a intentarlo en unos segundos (el chat es directo entre navegadores).`,
       };
     }
-    if (user.id === s.me.id) return { ok: false, error: "No puedes añadirte a ti mismo." };
-    if (s.friends.some((f) => f.id === user.id)) {
+    // Releer estado: durante la espera pudo cambiar (nuevas solicitudes, etc.)
+    const fresh = get();
+    if (!fresh.me) return { ok: false, error: "Sesión cerrada." };
+    if (user.id === fresh.me.id) return { ok: false, error: "No puedes añadirte a ti mismo." };
+    if (fresh.friends.some((f) => f.id === user.id)) {
       return { ok: false, error: "Ya sois amigos." };
     }
-    const inIdx = s.incoming.findIndex((r) => r.user.id === user.id);
+    const inIdx = fresh.incoming.findIndex((r) => r.user.id === user.id);
     if (inIdx >= 0) {
       friendAccept(user, get, set);
       p2p.sendFriendAccepted(user);
       return { ok: true };
     }
-    if (s.outgoing.some((r) => r.user.id === user.id)) {
+    if (fresh.outgoing.some((r) => r.user.id === user.id)) {
       return { ok: false, error: "Ya enviaste una solicitud a este usuario." };
     }
-    const outgoing = [...s.outgoing, { friendshipId: `fs-${user.id}`, user }];
-    persistFriends({ ...s, outgoing } as AxState);
+    const outgoing = [...fresh.outgoing, { friendshipId: `fs-${user.id}`, user }];
+    persistFriends({ ...fresh, outgoing } as AxState);
     set({ outgoing });
     p2p.sendFriendRequest(user);
     return { ok: true };

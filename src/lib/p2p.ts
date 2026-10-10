@@ -21,6 +21,11 @@ import type { AxConversation, AxMessage, AxUser } from "./store";
 const APP_ID = "axcgames-nueva-pestana-v1";
 export const LOBBY_ROOM = "lobby";
 
+/** Intervalo de reanuncio de identidad en el lobby (robustez de presencia). */
+const PRESENCE_HEARTBEAT_MS = 20_000;
+/** Tiempo máximo que sendFriendRequest espera a que aparezca el par. */
+export const PEER_DISCOVERY_TIMEOUT_MS = 12_000;
+
 export type P2pEvent =
   | { type: "peer-online"; user: AxUser }
   | { type: "peer-offline"; user: AxUser }
@@ -61,13 +66,19 @@ type TrysteroModule = typeof import("trystero/nostr");
 
 let trystero: TrysteroModule | null = null;
 let me: AxUser | null = null;
-let starting = false;
+let startPromise: Promise<void> | null = null;
 
 const rooms = new Map<string, Room>();
 const actionsByRoom = new Map<string, Record<string, { send: (data: unknown, options?: { target?: string | string[] | null }) => Promise<void> }>>();
 const peerUsers = new Map<string, string>(); // peerId -> userId
 const peersByUser = new Map<string, Set<string>>(); // userId -> peerIds
 const onlineUsers = new Map<string, AxUser>(); // userId -> user (visto en el lobby)
+
+/** Salas pedidas antes de que Trystero termine de cargar. */
+const pendingRooms = new Set<string>();
+
+/** Temporizador del heartbeat de presencia del lobby. */
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
 const listeners = new Set<(e: P2pEvent) => void>();
 
@@ -91,29 +102,63 @@ function emit(event: P2pEvent): void {
 export async function startP2P(user: AxUser): Promise<void> {
   if (typeof window === "undefined") return;
   if (trystero && me?.id === user.id && rooms.has(LOBBY_ROOM)) return;
-  if (starting) return;
-  starting = true;
-  try {
-    if (!trystero) trystero = await import("trystero/nostr");
-    me = user;
-    ensureRoom(LOBBY_ROOM);
-    // Exponer estado para diagnóstico (solo desarrollo)
-    if (typeof window !== "undefined") {
-      (window as unknown as { __axcP2P?: unknown }).__axcP2P = {
-        rooms,
-        onlineUsers,
-        peerUsers,
-        started: () => p2pStarted(),
-      };
+  // Si ya hay un arranque en curso, esperar a que termine y reintentar
+  // (evita perder salas en inicios de sesión consecutivos).
+  if (startPromise) {
+    await startPromise;
+    if (trystero && me?.id === user.id && rooms.has(LOBBY_ROOM)) return;
+  }
+  // Cambio de usuario sin desconectar: reiniciar limpio
+  if (trystero && me && me.id !== user.id) stopP2P();
+
+  const run = async () => {
+    try {
+      if (!trystero) trystero = await import("trystero/nostr");
+      me = user;
+      ensureRoom(LOBBY_ROOM);
+      // Salas pedidas mientras cargaba el módulo (DMs/grupos del usuario):
+      // sin esta cola se perdían silenciosamente y los mensajes no llegaban.
+      for (const roomId of pendingRooms) {
+        if (roomId !== LOBBY_ROOM) ensureRoom(roomId);
+      }
+      pendingRooms.clear();
+      // Heartbeat: reanuncia la identidad periódicamente para que ningún par
+      // se quede sin saber quiénes somos (repara mensajes de identidad perdidos
+      // y acelera el descubrimiento en presencia mutua).
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      heartbeatTimer = setInterval(() => {
+        const lobby = rooms.get(LOBBY_ROOM);
+        if (!lobby || !me) return;
+        void send(LOBBY_ROOM, "id", me);
+      }, PRESENCE_HEARTBEAT_MS);
+      // Exponer estado para diagnóstico (solo desarrollo)
+      if (typeof window !== "undefined") {
+        (window as unknown as { __axcP2P?: unknown }).__axcP2P = {
+          rooms,
+          onlineUsers,
+          peerUsers,
+          started: () => p2pStarted(),
+        };
+      }
+    } catch (err) {
+      console.error("[p2p] fallo al iniciar", err);
     }
-  } catch (err) {
-    console.error("[p2p] fallo al iniciar", err);
+  };
+
+  startPromise = run();
+  try {
+    await startPromise;
   } finally {
-    starting = false;
+    startPromise = null;
   }
 }
 
 export function stopP2P(): void {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+  pendingRooms.clear();
   for (const room of rooms.values()) {
     try {
       void room.leave();
@@ -130,10 +175,17 @@ export function stopP2P(): void {
 }
 
 export function joinRoom(roomId: string): void {
+  if (!trystero || !me) {
+    // Trystero aún no cargó (arranque en curso): encolar la sala para
+    // unirse en cuanto esté disponible.
+    pendingRooms.add(roomId);
+    return;
+  }
   ensureRoom(roomId);
 }
 
 export function leaveRoom(roomId: string): void {
+  pendingRooms.delete(roomId);
   const room = rooms.get(roomId);
   if (room) {
     try {
@@ -216,6 +268,19 @@ function ensureRoom(roomId: string): Room | null {
               "stun:stun1.l.google.com:19302",
               "stun:stun.cloudflare.com:3478",
             ],
+          },
+          // TURN gratuito (Open Relay Project): imprescindible para pares en
+          // redes distintas con NAT estricto, donde STUN solo no basta.
+          // Sin TURN, esos pares jamás conectan y aparecen como
+          // «desconectados» aunque ambos tengan la web abierta.
+          {
+            urls: [
+              "turn:openrelay.metered.ca:80",
+              "turn:openrelay.metered.ca:443",
+              "turn:openrelay.metered.ca:443?transport=tcp",
+            ],
+            username: "openrelayproject",
+            credential: "openrelayproject",
           },
         ],
       },

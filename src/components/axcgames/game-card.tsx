@@ -4,6 +4,7 @@ import Image from "next/image";
 import { motion } from "framer-motion";
 import { Heart, Play, Star, Users } from "lucide-react";
 import type { Game } from "@/lib/games";
+import { asset } from "@/lib/paths";
 
 type Props = {
   game: Game;
@@ -46,7 +47,7 @@ export default function GameCard({
       >
         <div className="relative aspect-[16/10] w-full">
           <Image
-            src={game.cover}
+            src={asset(game.cover)}
             alt={`Portada de ${game.title}`}
             fill
             priority={priority}

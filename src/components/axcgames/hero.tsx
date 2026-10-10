@@ -4,6 +4,7 @@ import Image from "next/image";
 import { motion } from "framer-motion";
 import { ChevronDown, Flame, Heart, Play, Star, Users } from "lucide-react";
 import type { Game } from "@/lib/games";
+import { asset } from "@/lib/paths";
 type Props = {
   game: Game;
   onPlay: (game: Game) => void;
@@ -32,7 +33,7 @@ export default function Hero({
       >
         <div className="relative h-[500px] w-full sm:h-[440px] lg:h-[520px]">
           <Image
-            src={game.cover}
+            src={asset(game.cover)}
             alt={`Portada de ${game.title}, juego de carreras de Fórmula 1`}
             fill
             priority
@@ -50,7 +51,7 @@ export default function Hero({
           >
             <div className="axc-pulse opacity-80 mix-blend-screen">
               <Image
-                src="/logo-full.png"
+                src={asset("/logo-full.png")}
                 alt=""
                 width={380}
                 height={380}

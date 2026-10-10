@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
+import { asset } from "@/lib/paths";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Bell,
@@ -110,7 +111,7 @@ export default function Header({
         >
           <span className="relative h-10 w-10 shrink-0 overflow-hidden rounded-xl border border-amber-400/30 shadow-lg shadow-amber-500/20 transition-transform group-hover:scale-105">
             <Image
-              src="/logo-emblem.png"
+              src={asset("/logo-emblem.png")}
               alt="Logotipo de AXC GAMES"
               fill
               sizes="40px"

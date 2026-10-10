@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Image from "next/image";
+import { asset } from "@/lib/paths";
 import { motion } from "framer-motion";
 import { ArrowLeft, KeyRound, Loader2, LogIn, UserPlus } from "lucide-react";
 import { useAxStore } from "@/lib/store";
@@ -47,7 +48,7 @@ export default function AuthScreen() {
           <div className="relative border-b border-white/10 px-8 pb-6 pt-8 text-center">
             <span className="relative mx-auto mb-4 block h-16 w-16 overflow-hidden rounded-2xl border border-amber-400/30 shadow-xl shadow-amber-500/25">
               <Image
-                src="/logo-emblem.png"
+                src={asset("/logo-emblem.png")}
                 alt="Logotipo de AXC GAMES"
                 fill
                 sizes="64px"

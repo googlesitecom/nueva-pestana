@@ -8,6 +8,7 @@ import {
   Check,
   Clock,
   Info,
+  Loader2,
   MessageSquare,
   Phone,
   Search,
@@ -344,7 +345,7 @@ function AddFriendForm({ onAdded }: { onAdded: () => void }) {
     e.preventDefault();
     if (loading || !username.trim()) return;
     setLoading(true);
-    setMsg(null);
+    setMsg({ ok: true, text: `Buscando a @${username.trim()} en la red…` });
     const res = await sendFriendRequest(username.trim());
     setLoading(false);
     if (res.ok) {
@@ -407,12 +408,20 @@ function AddFriendForm({ onAdded }: { onAdded: () => void }) {
           disabled={loading || !username.trim()}
           className="axc-shine relative w-full overflow-hidden rounded-xl bg-amber-400 px-6 py-3 font-display text-sm font-bold tracking-widest text-black shadow-lg shadow-amber-400/20 transition hover:bg-amber-300 active:scale-[0.98] disabled:opacity-50"
         >
-          {loading ? "ENVIANDO…" : "ENVIAR SOLICITUD"}
+          {loading ? (
+            <span className="flex items-center justify-center gap-2">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              BUSCANDO EN LA RED…
+            </span>
+          ) : (
+            "ENVIAR SOLICITUD"
+          )}
         </button>
         <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-white/30">
           <Info className="mt-0.5 h-3 w-3 shrink-0" />
-          El chat funciona directamente entre navegadores (P2P): vuestros dos deben
-          tener la web abierta para encontraros.
+          El chat funciona directamente entre navegadores (P2P): los dos debéis
+          tener la web abierta a la vez. Si no aparece, esperad unos segundos y
+          volved a probar.
         </p>
       </form>
 

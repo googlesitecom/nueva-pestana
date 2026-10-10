@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import Image from "next/image";
+import { asset } from "@/lib/paths";
 import { motion } from "framer-motion";
 import {
   ArrowLeft,
@@ -174,7 +175,7 @@ export default function GameView({
           {!loaded && (
             <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-5 overflow-hidden bg-[#080808]">
               <Image
-                src={game.cover}
+                src={asset(game.cover)}
                 alt=""
                 fill
                 sizes="100vw"
@@ -184,7 +185,7 @@ export default function GameView({
               <div className="relative flex flex-col items-center gap-4">
                 <span className="relative h-16 w-16 overflow-hidden rounded-2xl border border-amber-400/40 shadow-xl shadow-amber-500/25">
                   <Image
-                    src="/logo-emblem.png"
+                    src={asset("/logo-emblem.png")}
                     alt="Logotipo de AXC GAMES"
                     fill
                     sizes="64px"
