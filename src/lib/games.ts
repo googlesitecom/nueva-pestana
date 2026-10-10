@@ -41,7 +41,7 @@ export const games: Game[] = [
     longDescription:
       "Emergency Strike es un juego de disparos de acción intensa donde cada misión pone a prueba tus nervios. Infíltrate en escenarios urbanos hostiles, cubre tus ángulos, administra la munición y elimina objetivos tácticos bajo presión. Las oleadas enemigas se vuelven más letales en cada round, así que mejora tu equipamiento, perfecciona tu puntería y mantén la calma cuando el caos estalle. Solo los operativos más fríos sobreviven a la última misión.",
     cover: "/games/emergency-strike.png",
-    url: "https://googlesitecom.github.io/googlecom/",
+    url: "https://googlesitecom.github.io/Googlecom/",
     categories: ["Disparos", "Acción"],
     tags: ["FPS", "Táctico", "Misiones", "Oleadas"],
     rating: 4.8,
